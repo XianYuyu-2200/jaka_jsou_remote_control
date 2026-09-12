@@ -5,7 +5,9 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include "control_pipe.hpp"
 #include "robot_registry.hpp"
+#include "runtime_plan.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -50,11 +52,19 @@ constexpr int ID_GROUP_DELETE = 1206;
 
 constexpr int ID_SAVE = 1300;
 constexpr int ID_RELOAD = 1301;
+constexpr int ID_GROUP_REAL_MOTION = 1302;
+constexpr int ID_GROUP_START = 1303;
+constexpr int ID_GROUP_STOP = 1304;
+constexpr int ID_SESSION_STATUS = 1305;
+constexpr UINT_PTR ID_SESSION_TIMER = 1;
 
 HWND g_window{};
 HWND g_status{};
 HWND g_robot_list{};
 HWND g_group_list{};
+HWND g_session_status{};
+HANDLE g_session_process{};
+HANDLE g_session_job{};
 windows_jaka::RobotRegistry g_registry;
 std::filesystem::path g_registry_path;
 std::vector<HWND> g_robot_controls;
@@ -153,6 +163,11 @@ void fill_robot_list();
 void fill_group_list();
 void load_robot_form(int index);
 void load_group_form(int index);
+bool session_running();
+void start_selected_group();
+void stop_selected_group();
+void update_session_ui();
+std::filesystem::path workdir_root();
 
 void add_edit(HWND parent, int id, int x, int y, int width,
               std::vector<HWND>* group = nullptr) {
@@ -253,6 +268,19 @@ void build_ui(HWND window) {
                 520, 680, 120, 34, ID_GROUP_APPLY, &g_group_controls);
     add_control(window, L"BUTTON", L"删除组", WS_TABSTOP | BS_PUSHBUTTON,
                 650, 680, 120, 34, ID_GROUP_DELETE, &g_group_controls);
+    add_control(window, L"BUTTON", L"真实运动授权", BS_AUTOCHECKBOX,
+                390, 730, 150, 28, ID_GROUP_REAL_MOTION, &g_group_controls);
+    add_control(window, L"BUTTON", L"启动选中组", WS_TABSTOP | BS_PUSHBUTTON,
+                550, 726, 120, 34, ID_GROUP_START, &g_group_controls);
+    add_control(window, L"BUTTON", L"停止当前组", WS_TABSTOP | BS_PUSHBUTTON,
+                680, 726, 120, 34, ID_GROUP_STOP, &g_group_controls);
+    g_session_status = CreateWindowExW(0, L"STATIC", L"会话未启动",
+                                       WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                       820, 734, 330, 26, window,
+                                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SESSION_STATUS)),
+                                       GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_session_status, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 
     fill_robot_list();
     fill_group_list();
@@ -427,6 +455,143 @@ bool save_registry() {
     return true;
 }
 
+std::wstring quote_w(const std::wstring& value) {
+    return L"\"" + value + L"\"";
+}
+
+std::filesystem::path group_launcher_path() {
+    const auto root = workdir_root();
+    const auto candidate = root / L"windows_jaka" / L"run_group_from_registry.ps1";
+    if (std::filesystem::exists(candidate)) return candidate;
+    wchar_t module[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, module, MAX_PATH);
+    return std::filesystem::path(module).parent_path() / L"run_group_from_registry.ps1";
+}
+
+bool session_running() {
+    if (!g_session_process) return false;
+    return WaitForSingleObject(g_session_process, 0) == WAIT_TIMEOUT;
+}
+
+void update_session_ui() {
+    const bool running = session_running();
+    EnableWindow(GetDlgItem(g_window, ID_GROUP_START), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(g_window, ID_GROUP_STOP), running ? TRUE : FALSE);
+    EnableWindow(GetDlgItem(g_window, ID_GROUP_REAL_MOTION), running ? FALSE : TRUE);
+    if (g_session_status && !running) {
+        SetWindowTextW(g_session_status, L"会话未启动");
+    }
+}
+
+void start_selected_group() {
+    if (session_running()) {
+        set_status(L"当前已有组会话在运行");
+        return;
+    }
+    const int index = selected_index(g_group_list);
+    if (index < 0 || index >= static_cast<int>(g_registry.groups.size())) {
+        set_status(L"请先选择一个遥操作组");
+        return;
+    }
+    if (!save_registry()) return;
+
+    windows_jaka::TeleopRuntimePlan plan;
+    std::string error;
+    const std::string group_id = g_registry.groups[static_cast<std::size_t>(index)].id;
+    if (!windows_jaka::build_teleop_runtime_plan(g_registry, group_id, 30101, plan, error)) {
+        set_status(L"运行计划无效：" + widen(error));
+        return;
+    }
+
+    const auto launcher = group_launcher_path();
+    if (!std::filesystem::exists(launcher)) {
+        set_status(L"找不到组启动脚本：" + launcher.wstring());
+        return;
+    }
+    const bool real_motion =
+        SendMessageW(GetDlgItem(g_window, ID_GROUP_REAL_MOTION), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    std::wstring command = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
+        quote_w(launcher.wstring()) +
+        L" -RegistryPath " + quote_w(g_registry_path.wstring()) +
+        L" -GroupId " + quote_w(widen(group_id)) +
+        L" -BasePort 30101";
+    command += real_motion ? L" -ArmMotion" : L" -DryRun";
+
+    std::vector<wchar_t> command_line(command.begin(), command.end());
+    command_line.push_back(L'\0');
+
+    std::wstring old_motion;
+    const DWORD old_length = GetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", nullptr, 0);
+    if (old_length > 0) {
+        old_motion.resize(old_length);
+        GetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", old_motion.data(), old_length);
+        old_motion.resize(old_length - 1);
+    }
+    SetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", real_motion ? L"1" : nullptr);
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE,
+                                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                                        nullptr, workdir_root().c_str(), &startup, &process);
+    const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
+    SetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", old_motion.empty() ? nullptr : old_motion.c_str());
+
+    if (!created) {
+        set_status(L"启动组失败，Windows 错误码=" + std::to_wstring(create_error));
+        return;
+    }
+
+    CloseHandle(process.hThread);
+    g_session_process = process.hProcess;
+    g_session_job = CreateJobObjectW(nullptr, nullptr);
+    if (g_session_job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(g_session_job, JobObjectExtendedLimitInformation,
+                                     &limits, sizeof(limits)) ||
+            !AssignProcessToJobObject(g_session_job, g_session_process)) {
+            CloseHandle(g_session_job);
+            g_session_job = nullptr;
+        }
+    }
+    if (g_session_status) {
+        SetWindowTextW(g_session_status, L"组会话运行中");
+    }
+    set_status((real_motion ? L"真实运动组已启动：" : L"Dry-run 组已启动：") +
+               widen(group_id) + L"，跟随臂=" + std::to_wstring(plan.follower_endpoints.size()));
+    update_session_ui();
+}
+
+void stop_selected_group() {
+    if (!g_session_process) return;
+    windows_jaka::TeleopRuntimePlan plan;
+    std::string error;
+    const int index = selected_index(g_group_list);
+    if (index >= 0 && index < static_cast<int>(g_registry.groups.size())) {
+        const std::string group_id = g_registry.groups[static_cast<std::size_t>(index)].id;
+        if (windows_jaka::build_teleop_runtime_plan(g_registry, group_id, 30101, plan, error)) {
+            windows_jaka::send_control_command(widen(plan.operator_control_pipe), "STOP");
+            for (const auto& endpoint : plan.follower_endpoints) {
+                windows_jaka::send_control_command(widen(endpoint.control_pipe), "STOP");
+            }
+        }
+    }
+    if (WaitForSingleObject(g_session_process, 3000) == WAIT_TIMEOUT) {
+        if (g_session_job) TerminateJobObject(g_session_job, 1);
+        else TerminateProcess(g_session_process, 1);
+        WaitForSingleObject(g_session_process, 1000);
+    }
+    if (g_session_job) CloseHandle(g_session_job);
+    if (g_session_process) CloseHandle(g_session_process);
+    g_session_job = nullptr;
+    g_session_process = nullptr;
+    if (g_session_status) SetWindowTextW(g_session_status, L"会话已停止");
+    set_status(L"组会话已停止");
+    update_session_ui();
+}
+
 void handle_command(int id) {
     switch (id) {
     case ID_ROBOT_ADD: {
@@ -503,6 +668,12 @@ void handle_command(int id) {
     case ID_SAVE:
         save_registry();
         break;
+    case ID_GROUP_START:
+        start_selected_group();
+        break;
+    case ID_GROUP_STOP:
+        stop_selected_group();
+        break;
     case ID_RELOAD: {
         std::string error;
         if (g_registry.load(g_registry_path, error)) {
@@ -524,6 +695,20 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_CREATE:
         g_window = window;
         build_ui(window);
+        update_session_ui();
+        SetTimer(window, ID_SESSION_TIMER, 250, nullptr);
+        return 0;
+    case WM_TIMER:
+        if (wparam == ID_SESSION_TIMER) {
+            if (g_session_process && !session_running()) {
+                if (g_session_job) CloseHandle(g_session_job);
+                if (g_session_process) CloseHandle(g_session_process);
+                g_session_job = nullptr;
+                g_session_process = nullptr;
+                if (g_session_status) SetWindowTextW(g_session_status, L"会话进程已退出");
+                update_session_ui();
+            }
+        }
         return 0;
     case WM_COMMAND:
         if (HIWORD(wparam) == BN_CLICKED) handle_command(LOWORD(wparam));
@@ -541,6 +726,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         break;
     }
     case WM_DESTROY:
+        stop_selected_group();
+        KillTimer(window, ID_SESSION_TIMER);
         PostQuitMessage(0);
         return 0;
     default:
