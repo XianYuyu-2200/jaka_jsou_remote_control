@@ -84,6 +84,11 @@ constexpr int ID_SINGLE_STOP = 1403;
 constexpr int ID_SAFE_EXECUTE = 1404;
 constexpr int ID_STOP_ALL = 1405;
 constexpr int ID_JOG_BASE = 1500;
+constexpr int ID_OPEN_STATUS_PAGE = 1600;
+constexpr int ID_STATUS_BACK = 1601;
+constexpr int ID_STATUS_PAGE_PRIMARY = 1602;
+constexpr int ID_STATUS_PAGE_DIAG = 1603;
+constexpr int ID_STATUS_PAGE_SUMMARY = 1604;
 constexpr UINT_PTR ID_SESSION_TIMER = 1;
 
 HWND g_window{};
@@ -92,6 +97,11 @@ HWND g_robot_list{};
 HWND g_group_list{};
 HWND g_session_status{};
 HWND g_status_list{};
+HWND g_status_page_primary{};
+HWND g_status_page_diag{};
+HWND g_status_page_summary{};
+std::vector<HWND> g_status_page_controls;
+bool g_status_page_open{false};
 HFONT g_heading_font{};
 HFONT g_body_font{};
 HFONT g_small_font{};
@@ -188,7 +198,7 @@ std::string format_numbers(const windows_jaka::JointArray& values, double scale 
     return output.str();
 }
 
-void add_control(HWND parent, const wchar_t* klass, const wchar_t* text, DWORD style,
+HWND add_control(HWND parent, const wchar_t* klass, const wchar_t* text, DWORD style,
                  int x, int y, int width, int height, int id,
                  std::vector<HWND>* group = nullptr) {
     HWND control = CreateWindowExW(0, klass, text, style | WS_CHILD | WS_VISIBLE,
@@ -198,6 +208,7 @@ void add_control(HWND parent, const wchar_t* klass, const wchar_t* text, DWORD s
     SendMessageW(control, WM_SETFONT,
                  reinterpret_cast<WPARAM>(g_body_font ? g_body_font : GetStockObject(DEFAULT_GUI_FONT)), TRUE);
     if (group) group->push_back(control);
+    return control;
 }
 
 void add_label(HWND parent, const wchar_t* text, int x, int y, int width,
@@ -240,6 +251,9 @@ void stop_selected_single();
 void stop_all_sessions();
 void update_session_ui();
 void refresh_status_list();
+void refresh_status_page();
+void show_main_page();
+void show_status_page();
 void start_single_session(const std::string& control_mode);
 bool send_single_pipe_line(const std::string& line);
 LRESULT CALLBACK jog_button_subclass(HWND hwnd, UINT message, WPARAM wparam,
@@ -274,6 +288,8 @@ void build_ui(HWND window) {
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS)),
                                GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+    add_control(window, L"BUTTON", L"实时状态", WS_TABSTOP | BS_PUSHBUTTON,
+                1110, 20, 140, 40, ID_OPEN_STATUS_PAGE, nullptr);
 
     add_group_box(window, L"机器人设备与参数", 16, 84, 1228, 462);
     add_label(window, L"机器人列表", 34, 106, 260);
@@ -442,6 +458,62 @@ void build_ui(HWND window) {
     add_column(g_status_list, 14, 75, L"Watchdog");
     add_column(g_status_list, 15, 80, L"读/写错误");
 
+    HWND status_title = add_control(window, L"STATIC", L"机器人实时状态", SS_LEFT,
+                                   24, 16, 520, 32, 0, nullptr);
+    SendMessageW(status_title, WM_SETFONT, reinterpret_cast<WPARAM>(g_heading_font), TRUE);
+    g_status_page_summary = add_control(window, L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE,
+                                        540, 20, 550, 40, ID_STATUS_PAGE_SUMMARY, nullptr);
+    SendMessageW(g_status_page_summary, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+    HWND back = add_control(window, L"BUTTON", L"返回控制台", WS_TABSTOP | BS_PUSHBUTTON,
+                            1110, 20, 140, 40, ID_STATUS_BACK, nullptr);
+    HWND primary_label = add_control(window, L"STATIC", L"运行状态", SS_LEFT,
+                                    24, 74, 180, 24, 0, nullptr);
+    SendMessageW(primary_label, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+    g_status_page_primary = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                            WS_CHILD | LVS_REPORT | LVS_SINGLESEL,
+                                            24, 104, 1250, 360, window,
+                                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_PAGE_PRIMARY)),
+                                            GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_status_page_primary, WM_SETFONT, reinterpret_cast<WPARAM>(g_small_font), TRUE);
+    ListView_SetExtendedListViewStyle(g_status_page_primary,
+                                      LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    add_column(g_status_page_primary, 0, 130, L"机器人");
+    add_column(g_status_page_primary, 1, 110, L"模式");
+    add_column(g_status_page_primary, 2, 80, L"连接");
+    add_column(g_status_page_primary, 3, 80, L"上电");
+    add_column(g_status_page_primary, 4, 80, L"使能");
+    add_column(g_status_page_primary, 5, 80, L"拖动");
+    add_column(g_status_page_primary, 6, 80, L"伺服");
+    add_column(g_status_page_primary, 7, 360, L"故障");
+    add_column(g_status_page_primary, 8, 120, L"数据年龄ms");
+    add_column(g_status_page_primary, 9, 120, L"序列号");
+
+    HWND diag_label = add_control(window, L"STATIC", L"通信与诊断", SS_LEFT,
+                                  24, 480, 180, 24, 0, nullptr);
+    SendMessageW(diag_label, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+    g_status_page_diag = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                         WS_CHILD | LVS_REPORT | LVS_SINGLESEL,
+                                         24, 510, 1250, 440, window,
+                                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_PAGE_DIAG)),
+                                         GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_status_page_diag, WM_SETFONT, reinterpret_cast<WPARAM>(g_small_font), TRUE);
+    ListView_SetExtendedListViewStyle(g_status_page_diag,
+                                      LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    add_column(g_status_page_diag, 0, 130, L"机器人");
+    add_column(g_status_page_diag, 1, 110, L"登录返回码");
+    add_column(g_status_page_diag, 2, 120, L"Servo错误码");
+    add_column(g_status_page_diag, 3, 120, L"数据率Hz");
+    add_column(g_status_page_diag, 4, 100, L"丢包数");
+    add_column(g_status_page_diag, 5, 120, L"Watchdog");
+    add_column(g_status_page_diag, 6, 150, L"读取/发送错误");
+    add_column(g_status_page_diag, 7, 390, L"停止/故障原因");
+
+    for (HWND control : {status_title, primary_label, diag_label, g_status_page_summary,
+                                back, g_status_page_primary, g_status_page_diag}) {
+        g_status_page_controls.push_back(control);
+    }
+    for (HWND control : g_status_page_controls) ShowWindow(control, SW_HIDE);
+
     fill_robot_list();
     fill_group_list();
     refresh_status_list();
@@ -553,6 +625,104 @@ bool read_robot_form(windows_jaka::RobotProfile& robot, std::string& error) {
         return false;
     }
     return true;
+}
+
+std::unordered_map<std::string, std::string> read_status_file(const std::filesystem::path& path);
+std::wstring status_yes_no(const std::unordered_map<std::string, std::string>& values,
+                           const std::string& key);
+
+bool is_status_page_control(HWND control) {
+    return std::find(g_status_page_controls.begin(), g_status_page_controls.end(), control) !=
+           g_status_page_controls.end();
+}
+
+void show_main_page() {
+    g_status_page_open = false;
+    for (HWND control = GetWindow(g_window, GW_CHILD); control;
+         control = GetWindow(control, GW_HWNDNEXT)) {
+        ShowWindow(control, is_status_page_control(control) ? SW_HIDE : SW_SHOW);
+    }
+    SetWindowTextW(g_window, L"JAKA 多机器人控制台");
+    refresh_status_list();
+    update_session_ui();
+}
+
+void show_status_page() {
+    g_status_page_open = true;
+    for (HWND control = GetWindow(g_window, GW_CHILD); control;
+         control = GetWindow(control, GW_HWNDNEXT)) {
+        ShowWindow(control, is_status_page_control(control) ? SW_SHOW : SW_HIDE);
+    }
+    SetWindowTextW(g_window, L"JAKA 多机器人控制台 - 实时状态");
+    refresh_status_page();
+}
+
+void refresh_status_page() {
+    if (!g_status_page_primary || !g_status_page_diag) return;
+    clear_list(g_status_page_primary);
+    clear_list(g_status_page_diag);
+    int fault_count = 0;
+    for (std::size_t i = 0; i < g_registry.robots.size(); ++i) {
+        const auto& robot = g_registry.robots[i];
+        const auto path = g_status_directory / (widen(robot.id) + L".status");
+        const auto values = read_status_file(path);
+        auto value = [&](const std::string& key, const std::wstring& fallback = L"-") -> std::wstring {
+            const auto found = values.find(key);
+            return found == values.end() || found->second.empty() ? fallback : widen(found->second);
+        };
+        std::wstring mode = values.empty() ? L"未运行" : value("mode", L"-");
+        std::wstring alarm = value("alarm", L"");
+        if (alarm.empty()) alarm = values.empty() ? L"未运行" : L"无";
+        if (!values.empty() && alarm != L"无") ++fault_count;
+
+        std::wstring id = widen(robot.id);
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = static_cast<int>(i);
+        item.pszText = id.data();
+        const int row = ListView_InsertItem(g_status_page_primary, &item);
+        std::wstring connected = values.empty() ? L"-" : status_yes_no(values, "connected");
+        std::wstring powered = values.empty() ? L"-" : status_yes_no(values, "powered");
+        std::wstring enabled = values.empty() ? L"-" : status_yes_no(values, "enabled");
+        std::wstring dragging = values.empty() ? L"-" : status_yes_no(values, "dragging");
+        std::wstring servo = values.empty() ? L"-" : status_yes_no(values, "servo");
+        std::wstring age = value("packet_age_ms", L"-");
+        std::wstring sequence = value("sequence", L"-");
+        ListView_SetItemText(g_status_page_primary, row, 1, mode.data());
+        ListView_SetItemText(g_status_page_primary, row, 2, connected.data());
+        ListView_SetItemText(g_status_page_primary, row, 3, powered.data());
+        ListView_SetItemText(g_status_page_primary, row, 4, enabled.data());
+        ListView_SetItemText(g_status_page_primary, row, 5, dragging.data());
+        ListView_SetItemText(g_status_page_primary, row, 6, servo.data());
+        ListView_SetItemText(g_status_page_primary, row, 7, alarm.data());
+        ListView_SetItemText(g_status_page_primary, row, 8, age.data());
+        ListView_SetItemText(g_status_page_primary, row, 9, sequence.data());
+
+        const int diag_row = ListView_InsertItem(g_status_page_diag, &item);
+        std::wstring login_code = value("login_code", L"-");
+        std::wstring servo_error = value("servo_error", L"-");
+        std::wstring rate = value("rate_hz", L"-");
+        std::wstring dropped = value("dropped_packets", L"-");
+        std::wstring watchdog = value("watchdog_ticks", L"-");
+        const std::wstring read_errors = values.empty() ? L"-" : value("read_errors", L"0");
+        const std::wstring send_errors = values.empty() ? L"-" : value("send_errors", L"0");
+        std::wstring errors = values.empty() ? L"-" : read_errors + L" / " + send_errors;
+        ListView_SetItemText(g_status_page_diag, diag_row, 1, login_code.data());
+        ListView_SetItemText(g_status_page_diag, diag_row, 2, servo_error.data());
+        ListView_SetItemText(g_status_page_diag, diag_row, 3, rate.data());
+        ListView_SetItemText(g_status_page_diag, diag_row, 4, dropped.data());
+        ListView_SetItemText(g_status_page_diag, diag_row, 5, watchdog.data());
+        ListView_SetItemText(g_status_page_diag, diag_row, 6, errors.data());
+        ListView_SetItemText(g_status_page_diag, diag_row, 7, alarm.data());
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t summary[256]{};
+    swprintf_s(summary, L"机器人 %zu 台  |  运行会话 %zu  |  故障 %d  |  更新 %02d:%02d:%02d",
+               g_registry.robots.size(), g_sessions.size(), fault_count,
+               now.wHour, now.wMinute, now.wSecond);
+    SetWindowTextW(g_status_page_summary, summary);
 }
 
 std::unordered_map<std::string, std::string> read_status_file(const std::filesystem::path& path) {
@@ -1290,6 +1460,12 @@ void handle_command(int id) {
     case ID_STOP_ALL:
         stop_all_sessions();
         break;
+    case ID_OPEN_STATUS_PAGE:
+        show_status_page();
+        break;
+    case ID_STATUS_BACK:
+        show_main_page();
+        break;
     case ID_SAFE_EXECUTE:
         execute_single_safe_pose();
         break;
@@ -1374,7 +1550,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (wparam == ID_SESSION_TIMER) {
             const std::size_t before = g_sessions.size();
             prune_exited_sessions();
-            refresh_status_list();
+            if (g_status_page_open) refresh_status_page();
+            else refresh_status_list();
             update_session_ui();
             if (g_sessions.size() != before && g_sessions.empty() && g_session_status) {
                 SetWindowTextW(g_session_status, L"全部会话已退出");
