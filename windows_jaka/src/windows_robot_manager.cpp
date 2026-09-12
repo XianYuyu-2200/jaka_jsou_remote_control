@@ -28,6 +28,19 @@
 
 namespace {
 
+constexpr COLORREF kBackground = RGB(248, 250, 252);
+constexpr COLORREF kSurface = RGB(255, 255, 255);
+constexpr COLORREF kSurfaceMuted = RGB(241, 245, 249);
+constexpr COLORREF kBorder = RGB(226, 232, 240);
+constexpr COLORREF kText = RGB(51, 65, 85);
+constexpr COLORREF kMuted = RGB(71, 85, 105);
+constexpr COLORREF kPrimary = RGB(51, 65, 85);
+constexpr COLORREF kAccent = RGB(234, 88, 12);
+constexpr COLORREF kSuccess = RGB(5, 150, 105);
+constexpr int kHeadingFontHeight = 24;
+constexpr int kBodyFontHeight = 18;
+constexpr int kSmallFontHeight = 16;
+
 constexpr int ID_ROBOT_LIST = 1000;
 constexpr int ID_GROUP_LIST = 1001;
 constexpr int ID_STATUS = 1002;
@@ -79,6 +92,11 @@ HWND g_robot_list{};
 HWND g_group_list{};
 HWND g_session_status{};
 HWND g_status_list{};
+HFONT g_heading_font{};
+HFONT g_body_font{};
+HFONT g_small_font{};
+HBRUSH g_background_brush{};
+HBRUSH g_surface_brush{};
 std::filesystem::path g_status_directory;
 enum class SessionKind { Group, Single };
 struct ActiveSession {
@@ -178,13 +196,29 @@ void add_control(HWND parent, const wchar_t* klass, const wchar_t* text, DWORD s
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                    GetModuleHandleW(nullptr), nullptr);
     SendMessageW(control, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+                 reinterpret_cast<WPARAM>(g_body_font ? g_body_font : GetStockObject(DEFAULT_GUI_FONT)), TRUE);
     if (group) group->push_back(control);
 }
 
 void add_label(HWND parent, const wchar_t* text, int x, int y, int width,
                std::vector<HWND>* group = nullptr) {
-    add_control(parent, L"STATIC", text, SS_LEFT, x, y, width, 22, 0, group);
+    add_control(parent, L"STATIC", text, SS_LEFT, x, y, width, 24, 0, group);
+}
+
+void add_section_title(HWND parent, const wchar_t* text, int x, int y, int width) {
+    HWND control = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                   x, y, width, 32, parent, nullptr,
+                                   GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(control, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(g_heading_font ? g_heading_font : GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+}
+
+void add_group_box(HWND parent, const wchar_t* text, int x, int y, int width, int height) {
+    HWND box = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                               x, y, width, height, parent, nullptr,
+                               GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(box, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(g_small_font ? g_small_font : GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 }
 
 void add_column(HWND list, int index, int width, const wchar_t* title) {
@@ -220,168 +254,193 @@ void add_edit(HWND parent, int id, int x, int y, int width,
 }
 
 void build_ui(HWND window) {
-    add_control(window, L"STATIC", L"JAKA 多机器人管理", SS_LEFT,
-                20, 10, 500, 32, 0);
-    g_status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                               550, 10, 620, 28, window,
+    g_heading_font = CreateFontW(kHeadingFontHeight, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, FF_SWISS, L"Microsoft YaHei UI");
+    g_body_font = CreateFontW(kBodyFontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              CLEARTYPE_QUALITY, FF_SWISS, L"Microsoft YaHei UI");
+    g_small_font = CreateFontW(kSmallFontHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               CLEARTYPE_QUALITY, FF_SWISS, L"Microsoft YaHei UI");
+    g_background_brush = CreateSolidBrush(kBackground);
+    g_surface_brush = CreateSolidBrush(kSurface);
+
+    add_section_title(window, L"JAKA 多机器人控制台", 24, 16, 520);
+    add_control(window, L"STATIC", L"设备管理  /  单臂控制  /  一拖多遥操作  /  实时诊断",
+                SS_LEFT, 26, 52, 620, 26, 0, nullptr);
+    g_status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
+                               700, 20, 570, 40, window,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS)),
                                GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
 
-    add_label(window, L"机器人列表", 20, 48, 300);
+    add_group_box(window, L"机器人设备与参数", 16, 84, 1228, 462);
+    add_label(window, L"机器人列表", 34, 106, 260);
     g_robot_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                   WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-                                   20, 74, 340, 420, window,
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL,
+                                   34, 134, 350, 340, window,
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_ROBOT_LIST)),
                                    GetModuleHandleW(nullptr), nullptr);
-    ListView_SetExtendedListViewStyle(g_robot_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    add_column(g_robot_list, 0, 95, L"ID");
+    SendMessageW(g_robot_list, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+    ListView_SetExtendedListViewStyle(g_robot_list,
+                                      LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    add_column(g_robot_list, 0, 90, L"ID");
     add_column(g_robot_list, 1, 120, L"名称");
-    add_column(g_robot_list, 2, 110, L"IP");
+    add_column(g_robot_list, 2, 120, L"IP");
 
-    add_label(window, L"机器人参数", 390, 48, 300, &g_robot_controls);
-    add_label(window, L"ID", 390, 78, 100, &g_robot_controls);
-    add_edit(window, ID_ROBOT_ID, 490, 74, 240, &g_robot_controls);
-    add_label(window, L"名称", 750, 78, 100, &g_robot_controls);
-    add_edit(window, ID_ROBOT_NAME, 850, 74, 300, &g_robot_controls);
-    add_label(window, L"型号", 390, 118, 100, &g_robot_controls);
-    add_edit(window, ID_ROBOT_MODEL, 490, 114, 240, &g_robot_controls);
-    add_label(window, L"IP", 750, 118, 100, &g_robot_controls);
-    add_edit(window, ID_ROBOT_IP, 850, 114, 300, &g_robot_controls);
-    add_control(window, L"BUTTON", L"启用", BS_AUTOCHECKBOX,
-                390, 154, 120, 28, ID_ROBOT_ENABLED, &g_robot_controls);
-    add_label(window, L"滤波器", 520, 158, 90, &g_robot_controls);
+    add_label(window, L"参数编辑", 420, 106, 260);
+    add_label(window, L"ID", 420, 142, 80);
+    add_edit(window, ID_ROBOT_ID, 510, 138, 220, &g_robot_controls);
+    add_label(window, L"名称", 770, 142, 80);
+    add_edit(window, ID_ROBOT_NAME, 850, 138, 350, &g_robot_controls);
+    add_label(window, L"型号", 420, 182, 80);
+    add_edit(window, ID_ROBOT_MODEL, 510, 178, 220, &g_robot_controls);
+    add_label(window, L"IP 地址", 770, 182, 80);
+    add_edit(window, ID_ROBOT_IP, 850, 178, 350, &g_robot_controls);
+    add_control(window, L"BUTTON", L"启用该机器人", BS_AUTOCHECKBOX,
+                420, 220, 180, 30, ID_ROBOT_ENABLED, &g_robot_controls);
+    add_label(window, L"滤波器", 620, 224, 80, &g_robot_controls);
     HWND filter = CreateWindowExW(0, L"COMBOBOX", L"",
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                                  610, 154, 140, 160, window,
+                                  710, 218, 140, 220, window,
                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_ROBOT_FILTER)),
                                   GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(filter, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    SendMessageW(filter, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
     SendMessageW(filter, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"none"));
     SendMessageW(filter, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"lpf"));
     SendMessageW(filter, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"nlf"));
+    SendMessageW(filter, CB_SETCURSEL, 1, 0);
     g_robot_controls.push_back(filter);
+    add_label(window, L"LPF 截止", 880, 224, 90, &g_robot_controls);
+    add_edit(window, ID_ROBOT_LPF, 970, 218, 110, &g_robot_controls);
 
-    add_label(window, L"LPF 截止", 760, 158, 90, &g_robot_controls);
-    add_edit(window, ID_ROBOT_LPF, 850, 154, 120, &g_robot_controls);
-    add_label(window, L"最大速度 rad/s", 390, 198, 150, &g_robot_controls);
-    add_edit(window, ID_ROBOT_VEL, 540, 194, 140, &g_robot_controls);
-    add_label(window, L"最大加速度", 700, 198, 130, &g_robot_controls);
-    add_edit(window, ID_ROBOT_ACC, 830, 194, 140, &g_robot_controls);
-    add_label(window, L"关节方向", 390, 238, 120, &g_robot_controls);
-    add_edit(window, ID_ROBOT_DIRECTION, 500, 234, 650, &g_robot_controls);
-    add_label(window, L"下限角度", 390, 278, 120, &g_robot_controls);
-    add_edit(window, ID_ROBOT_LOWER, 500, 274, 650, &g_robot_controls);
-    add_label(window, L"上限角度", 390, 318, 120, &g_robot_controls);
-    add_edit(window, ID_ROBOT_UPPER, 500, 314, 650, &g_robot_controls);
-    add_label(window, L"安全姿态角度", 390, 358, 140, &g_robot_controls);
-    add_edit(window, ID_ROBOT_SAFE, 530, 354, 620, &g_robot_controls);
+    add_label(window, L"最大速度 rad/s", 420, 266, 150, &g_robot_controls);
+    add_edit(window, ID_ROBOT_VEL, 570, 260, 150, &g_robot_controls);
+    add_label(window, L"最大加速度 rad/s²", 750, 266, 170, &g_robot_controls);
+    add_edit(window, ID_ROBOT_ACC, 920, 260, 160, &g_robot_controls);
+    add_label(window, L"关节方向（+, -）", 420, 308, 170, &g_robot_controls);
+    add_edit(window, ID_ROBOT_DIRECTION, 590, 302, 610, &g_robot_controls);
+    add_label(window, L"关节下限（角度）", 420, 350, 170, &g_robot_controls);
+    add_edit(window, ID_ROBOT_LOWER, 590, 344, 610, &g_robot_controls);
+    add_label(window, L"关节上限（角度）", 420, 392, 170, &g_robot_controls);
+    add_edit(window, ID_ROBOT_UPPER, 590, 386, 610, &g_robot_controls);
+    add_label(window, L"安全姿态（角度）", 420, 434, 170, &g_robot_controls);
+    add_edit(window, ID_ROBOT_SAFE, 590, 428, 610, &g_robot_controls);
+
     add_control(window, L"BUTTON", L"新增机器人", WS_TABSTOP | BS_PUSHBUTTON,
-                390, 400, 120, 34, ID_ROBOT_ADD, &g_robot_controls);
+                34, 490, 120, 38, ID_ROBOT_ADD, &g_robot_controls);
     add_control(window, L"BUTTON", L"应用修改", WS_TABSTOP | BS_PUSHBUTTON,
-                520, 400, 120, 34, ID_ROBOT_APPLY, &g_robot_controls);
+                162, 490, 120, 38, ID_ROBOT_APPLY, &g_robot_controls);
     add_control(window, L"BUTTON", L"删除选中", WS_TABSTOP | BS_PUSHBUTTON,
-                650, 400, 120, 34, ID_ROBOT_DELETE, &g_robot_controls);
-    add_control(window, L"BUTTON", L"保存配置", WS_TABSTOP | BS_PUSHBUTTON,
-                800, 400, 120, 34, ID_SAVE, &g_robot_controls);
+                290, 490, 120, 38, ID_ROBOT_DELETE, &g_robot_controls);
+    add_control(window, L"BUTTON", L"保存配置", WS_TABSTOP | BS_DEFPUSHBUTTON,
+                1080, 490, 140, 38, ID_SAVE, &g_robot_controls);
     add_control(window, L"BUTTON", L"重新加载", WS_TABSTOP | BS_PUSHBUTTON,
-                930, 400, 120, 34, ID_RELOAD, &g_robot_controls);
-    add_label(window, L"单台机器人控制", 390, 452, 150, &g_robot_controls);
+                940, 490, 130, 38, ID_RELOAD, &g_robot_controls);
+
+    add_group_box(window, L"遥操作组与运行控制", 16, 558, 1228, 282);
+    add_label(window, L"遥操作组", 34, 582, 260);
+    g_group_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL,
+                                   34, 610, 350, 170, window,
+                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_GROUP_LIST)),
+                                   GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_group_list, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+    ListView_SetExtendedListViewStyle(g_group_list,
+                                      LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    add_column(g_group_list, 0, 100, L"组 ID");
+    add_column(g_group_list, 1, 220, L"名称");
+
+    add_label(window, L"组参数", 420, 582, 200, &g_group_controls);
+    add_label(window, L"组 ID", 420, 618, 90, &g_group_controls);
+    add_edit(window, ID_GROUP_ID, 510, 612, 220, &g_group_controls);
+    add_label(window, L"组名称", 770, 618, 90, &g_group_controls);
+    add_edit(window, ID_GROUP_NAME, 860, 612, 340, &g_group_controls);
+    add_label(window, L"操作臂 ID", 420, 658, 120, &g_group_controls);
+    add_edit(window, ID_GROUP_OPERATOR, 540, 652, 190, &g_group_controls);
+    add_label(window, L"跟随臂 ID（逗号分隔）", 770, 658, 220, &g_group_controls);
+    add_edit(window, ID_GROUP_FOLLOWERS, 990, 652, 210, &g_group_controls);
+
+    add_control(window, L"BUTTON", L"新增组", WS_TABSTOP | BS_PUSHBUTTON,
+                34, 790, 110, 36, ID_GROUP_ADD, &g_group_controls);
+    add_control(window, L"BUTTON", L"应用组修改", WS_TABSTOP | BS_PUSHBUTTON,
+                152, 790, 120, 36, ID_GROUP_APPLY, &g_group_controls);
+    add_control(window, L"BUTTON", L"删除组", WS_TABSTOP | BS_PUSHBUTTON,
+                280, 790, 104, 36, ID_GROUP_DELETE, &g_group_controls);
+    add_control(window, L"BUTTON", L"真实运动授权（组/单台）", BS_AUTOCHECKBOX,
+                420, 706, 260, 30, ID_GROUP_REAL_MOTION, &g_group_controls);
+    add_control(window, L"BUTTON", L"启动选中组", WS_TABSTOP | BS_DEFPUSHBUTTON,
+                700, 702, 130, 38, ID_GROUP_START, &g_group_controls);
+    add_control(window, L"BUTTON", L"停止当前组", WS_TABSTOP | BS_PUSHBUTTON,
+                840, 702, 130, 38, ID_GROUP_STOP, &g_group_controls);
+    add_control(window, L"BUTTON", L"全部停止", WS_TABSTOP | BS_PUSHBUTTON,
+                980, 702, 110, 38, ID_STOP_ALL, &g_group_controls);
+    g_session_status = CreateWindowExW(0, L"STATIC", L"无运行会话",
+                                       WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                                       1100, 702, 118, 38, window,
+                                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SESSION_STATUS)),
+                                       GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_session_status, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+
+    add_label(window, L"单台机器人控制", 420, 756, 180, &g_robot_controls);
     add_control(window, L"BUTTON", L"关节控制", WS_TABSTOP | BS_PUSHBUTTON,
-                540, 444, 100, 34, ID_SINGLE_JOINT, &g_robot_controls);
+                570, 748, 100, 36, ID_SINGLE_JOINT, &g_robot_controls);
     add_control(window, L"BUTTON", L"轨迹录制", WS_TABSTOP | BS_PUSHBUTTON,
-                650, 444, 100, 34, ID_SINGLE_RECORD, &g_robot_controls);
+                680, 748, 100, 36, ID_SINGLE_RECORD, &g_robot_controls);
     add_control(window, L"BUTTON", L"轨迹回放", WS_TABSTOP | BS_PUSHBUTTON,
-                760, 444, 100, 34, ID_SINGLE_PLAYBACK, &g_robot_controls);
+                790, 748, 100, 36, ID_SINGLE_PLAYBACK, &g_robot_controls);
     add_control(window, L"BUTTON", L"停止单台", WS_TABSTOP | BS_PUSHBUTTON,
-                870, 444, 100, 34, ID_SINGLE_STOP, &g_robot_controls);
+                900, 748, 100, 36, ID_SINGLE_STOP, &g_robot_controls);
     add_control(window, L"BUTTON", L"执行安全姿态", WS_TABSTOP | BS_PUSHBUTTON,
-                390, 486, 100, 30, ID_SAFE_EXECUTE, &g_robot_controls);
+                1010, 748, 130, 36, ID_SAFE_EXECUTE, &g_robot_controls);
+
     for (int axis = 0; axis < 6; ++axis) {
-        const int x = 500 + axis * 105;
+        const int x = 420 + axis * 125;
         std::wstring joint = L"J" + std::to_wstring(axis + 1);
         add_control(window, L"STATIC", joint.c_str(), SS_LEFT,
-                    x, 490, 24, 24, 0, &g_robot_controls);
+                    x, 800, 34, 26, 0, &g_robot_controls);
         HWND minus = CreateWindowExW(0, L"BUTTON", L"-", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                     x + 25, 486, 30, 30, window,
+                                     x + 40, 794, 36, 32, window,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_JOG_BASE + axis * 2)),
                                      GetModuleHandleW(nullptr), nullptr);
         HWND plus = CreateWindowExW(0, L"BUTTON", L"+", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                    x + 58, 486, 30, 30, window,
+                                    x + 80, 794, 36, 32, window,
                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_JOG_BASE + axis * 2 + 1)),
                                     GetModuleHandleW(nullptr), nullptr);
-        SendMessageW(minus, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-        SendMessageW(plus, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        SendMessageW(minus, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
+        SendMessageW(plus, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
         SetWindowSubclass(minus, jog_button_subclass, static_cast<UINT_PTR>(axis * 2), static_cast<DWORD_PTR>(axis * 2));
         SetWindowSubclass(plus, jog_button_subclass, static_cast<UINT_PTR>(axis * 2 + 1), static_cast<DWORD_PTR>(axis * 2 + 1));
         g_robot_controls.push_back(minus);
         g_robot_controls.push_back(plus);
     }
 
-    add_label(window, L"遥操作组", 20, 520, 300);
-    g_group_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                   WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-                                   20, 546, 340, 260, window,
-                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_GROUP_LIST)),
-                                   GetModuleHandleW(nullptr), nullptr);
-    ListView_SetExtendedListViewStyle(g_group_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    add_column(g_group_list, 0, 100, L"ID");
-    add_column(g_group_list, 1, 220, L"名称");
-
-    add_label(window, L"组参数", 390, 520, 300, &g_group_controls);
-    add_label(window, L"组 ID", 390, 552, 100, &g_group_controls);
-    add_edit(window, ID_GROUP_ID, 490, 548, 240, &g_group_controls);
-    add_label(window, L"组名称", 750, 552, 100, &g_group_controls);
-    add_edit(window, ID_GROUP_NAME, 850, 548, 300, &g_group_controls);
-    add_label(window, L"操作臂 ID", 390, 592, 120, &g_group_controls);
-    add_edit(window, ID_GROUP_OPERATOR, 510, 588, 220, &g_group_controls);
-    add_label(window, L"跟随臂 ID，逗号分隔", 390, 632, 220, &g_group_controls);
-    add_edit(window, ID_GROUP_FOLLOWERS, 610, 628, 540, &g_group_controls);
-    add_control(window, L"BUTTON", L"新增组", WS_TABSTOP | BS_PUSHBUTTON,
-                390, 680, 120, 34, ID_GROUP_ADD, &g_group_controls);
-    add_control(window, L"BUTTON", L"应用组修改", WS_TABSTOP | BS_PUSHBUTTON,
-                520, 680, 120, 34, ID_GROUP_APPLY, &g_group_controls);
-    add_control(window, L"BUTTON", L"删除组", WS_TABSTOP | BS_PUSHBUTTON,
-                650, 680, 120, 34, ID_GROUP_DELETE, &g_group_controls);
-    add_control(window, L"BUTTON", L"真实运动授权（组/单台）", BS_AUTOCHECKBOX,
-                390, 730, 150, 28, ID_GROUP_REAL_MOTION, &g_group_controls);
-    add_control(window, L"BUTTON", L"启动选中组", WS_TABSTOP | BS_PUSHBUTTON,
-                550, 726, 120, 34, ID_GROUP_START, &g_group_controls);
-    add_control(window, L"BUTTON", L"停止当前组", WS_TABSTOP | BS_PUSHBUTTON,
-                680, 726, 120, 34, ID_GROUP_STOP, &g_group_controls);
-    add_control(window, L"BUTTON", L"全部停止", WS_TABSTOP | BS_PUSHBUTTON,
-                805, 726, 90, 34, ID_STOP_ALL, &g_group_controls);
-    g_session_status = CreateWindowExW(0, L"STATIC", L"会话未启动",
-                                       WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                       905, 730, 245, 26, window,
-                                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SESSION_STATUS)),
-                                       GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(g_session_status, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-
-    add_label(window, L"机器人实时状态", 20, 820, 300);
+    add_group_box(window, L"机器人实时状态", 16, 848, 1228, 148);
     g_status_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                     WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-                                    20, 846, 1140, 180, window,
+                                    34, 878, 1192, 100, window,
                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_LIST)),
                                     GetModuleHandleW(nullptr), nullptr);
-    ListView_SetExtendedListViewStyle(g_status_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    SendMessageW(g_status_list, WM_SETFONT, reinterpret_cast<WPARAM>(g_small_font), TRUE);
+    ListView_SetExtendedListViewStyle(g_status_list,
+                                      LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     add_column(g_status_list, 0, 110, L"机器人");
-    add_column(g_status_list, 1, 110, L"模式");
-    add_column(g_status_list, 2, 70, L"连接");
-    add_column(g_status_list, 3, 70, L"上电");
-    add_column(g_status_list, 4, 70, L"使能");
-    add_column(g_status_list, 5, 70, L"拖动");
-    add_column(g_status_list, 6, 70, L"伺服");
-    add_column(g_status_list, 7, 170, L"故障");
-    add_column(g_status_list, 8, 90, L"数据年龄ms");
-    add_column(g_status_list, 9, 90, L"序列");
+    add_column(g_status_list, 1, 100, L"模式");
+    add_column(g_status_list, 2, 60, L"连接");
+    add_column(g_status_list, 3, 60, L"上电");
+    add_column(g_status_list, 4, 60, L"使能");
+    add_column(g_status_list, 5, 60, L"拖动");
+    add_column(g_status_list, 6, 60, L"伺服");
+    add_column(g_status_list, 7, 150, L"故障");
+    add_column(g_status_list, 8, 90, L"年龄ms");
+    add_column(g_status_list, 9, 80, L"序列");
     add_column(g_status_list, 10, 70, L"登录码");
     add_column(g_status_list, 11, 80, L"Servo错误");
-    add_column(g_status_list, 12, 80, L"速率Hz");
-    add_column(g_status_list, 13, 80, L"丢包");
-    add_column(g_status_list, 14, 90, L"Watchdog");
-    add_column(g_status_list, 15, 100, L"读写错误");
+    add_column(g_status_list, 12, 70, L"速率Hz");
+    add_column(g_status_list, 13, 70, L"丢包");
+    add_column(g_status_list, 14, 80, L"Watchdog");
+    add_column(g_status_list, 15, 90, L"读/写错误");
 
     fill_robot_list();
     fill_group_list();
@@ -1264,6 +1323,53 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         update_session_ui();
         SetTimer(window, ID_SESSION_TIMER, 500, nullptr);
         return 0;
+    case WM_GETMINMAXINFO: {
+        auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
+        limits->ptMinTrackSize.x = 1280;
+        limits->ptMinTrackSize.y = 1050;
+        return 0;
+    }
+    case WM_ERASEBKGND: {
+        RECT rect{};
+        GetClientRect(window, &rect);
+        FillRect(reinterpret_cast<HDC>(wparam), &rect, g_background_brush);
+        RECT header{0, 0, rect.right, 82};
+        FillRect(reinterpret_cast<HDC>(wparam), &header, g_surface_brush);
+        return 1;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, kText);
+        return reinterpret_cast<LRESULT>(g_background_brush);
+    }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        SetBkColor(dc, kSurface);
+        SetTextColor(dc, kText);
+        return reinterpret_cast<LRESULT>(g_surface_brush);
+    }
+    case WM_CTLCOLORBTN: {
+        HDC dc = reinterpret_cast<HDC>(wparam);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, kText);
+        return reinterpret_cast<LRESULT>(g_background_brush);
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        HDC dc = BeginPaint(window, &paint);
+        RECT client{};
+        GetClientRect(window, &client);
+        HPEN pen = CreatePen(PS_SOLID, 1, kBorder);
+        HGDIOBJ old_pen = SelectObject(dc, pen);
+        MoveToEx(dc, 0, 82, nullptr);
+        LineTo(dc, client.right, 82);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+        EndPaint(window, &paint);
+        return 0;
+    }
     case WM_TIMER:
         if (wparam == ID_SESSION_TIMER) {
             const std::size_t before = g_sessions.size();
@@ -1293,6 +1399,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_DESTROY:
         stop_all_sessions();
         KillTimer(window, ID_SESSION_TIMER);
+        DeleteObject(g_heading_font);
+        DeleteObject(g_body_font);
+        DeleteObject(g_small_font);
+        DeleteObject(g_background_brush);
+        DeleteObject(g_surface_brush);
         PostQuitMessage(0);
         return 0;
     default:
@@ -1352,9 +1463,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     window_class.lpszClassName = L"JakaRobotManagerWindow";
     if (!RegisterClassExW(&window_class)) return 1;
 
-    HWND window = CreateWindowExW(0, window_class.lpszClassName, L"JAKA 多机器人管理",
+    HWND window = CreateWindowExW(0, window_class.lpszClassName, L"JAKA 多机器人控制台",
                                   WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, 1220, 1100,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, 1320, 1120,
                                   nullptr, nullptr, instance, nullptr);
     if (!window) return 2;
     ShowWindow(window, show_command);
