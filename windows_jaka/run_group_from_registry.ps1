@@ -8,6 +8,7 @@ param(
     [switch]$DryRun,
     [switch]$ArmMotion,
     [double]$DurationSec = 0,
+    [string]$StatusDirectory = "",
     [string]$Configuration = "Release"
 )
 
@@ -22,6 +23,9 @@ if (-not $RegistryPath) {
     $RegistryPath = Join-Path $scriptRoot "..\config\robots.ini"
 }
 $RegistryPath = [IO.Path]::GetFullPath($RegistryPath)
+if (-not $StatusDirectory) { $StatusDirectory = Join-Path $scriptRoot "..\status" }
+$StatusDirectory = [IO.Path]::GetFullPath($StatusDirectory)
+New-Item -ItemType Directory -Path $StatusDirectory -Force | Out-Null
 if (-not (Test-Path -LiteralPath $RegistryPath)) {
     throw "Robot registry not found: $RegistryPath"
 }
@@ -101,6 +105,7 @@ try {
         $peerPorts += $port
         $pipe = "\\.\pipe\jaka_multi_follower_$($id -replace '[^A-Za-z0-9_-]', '_')"
         $followerArgs = @(
+            "--robot-id", $id,
             "--follower-ip", [string]$section["ip"],
             "--port", "$port",
             "--control-pipe", $pipe,
@@ -108,7 +113,8 @@ try {
             "--filter", [string]$section["filter"],
             "--lpf-cutoff", [string]$section["lpf_cutoff"],
             "--max-velocity", [string]$section["max_velocity"],
-            "--max-acceleration", [string]$section["max_acceleration"]
+            "--max-acceleration", [string]$section["max_acceleration"],
+            "--status-file", (Join-Path $StatusDirectory "$id.status")
         )
         if ($DurationSec -gt 0) { $followerArgs += @("--duration-sec", "$DurationSec") }
         if ($ArmMotion) { $followerArgs += "--arm-motion" } else { $followerArgs += "--dry-run" }
@@ -124,13 +130,15 @@ try {
 
     $operatorPipe = "\\.\pipe\jaka_multi_operator_$($GroupId -replace '[^A-Za-z0-9_-]', '_')"
     $operatorArgs = @(
+        "--robot-id", $operatorId,
         "--operator-ip", [string]$operatorSection["ip"],
         "--control-pipe", $operatorPipe,
         "--control-mode", "teleop",
         "--filter", [string]$operatorSection["filter"],
         "--lpf-cutoff", [string]$operatorSection["lpf_cutoff"],
         "--max-velocity", [string]$operatorSection["max_velocity"],
-        "--max-acceleration", [string]$operatorSection["max_acceleration"]
+        "--max-acceleration", [string]$operatorSection["max_acceleration"],
+        "--status-file", (Join-Path $StatusDirectory "$operatorId.status")
     )
     foreach ($port in $peerPorts) { $operatorArgs += @("--peer-port", "$port") }
     if ($DurationSec -gt 0) { $operatorArgs += @("--duration-sec", "$DurationSec") }

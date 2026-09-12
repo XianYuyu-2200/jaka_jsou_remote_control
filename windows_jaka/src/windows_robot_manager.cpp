@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
@@ -56,6 +57,7 @@ constexpr int ID_GROUP_REAL_MOTION = 1302;
 constexpr int ID_GROUP_START = 1303;
 constexpr int ID_GROUP_STOP = 1304;
 constexpr int ID_SESSION_STATUS = 1305;
+constexpr int ID_STATUS_LIST = 1306;
 constexpr UINT_PTR ID_SESSION_TIMER = 1;
 
 HWND g_window{};
@@ -63,8 +65,10 @@ HWND g_status{};
 HWND g_robot_list{};
 HWND g_group_list{};
 HWND g_session_status{};
+HWND g_status_list{};
 HANDLE g_session_process{};
 HANDLE g_session_job{};
+std::filesystem::path g_status_directory;
 windows_jaka::RobotRegistry g_registry;
 std::filesystem::path g_registry_path;
 std::vector<HWND> g_robot_controls;
@@ -167,6 +171,7 @@ bool session_running();
 void start_selected_group();
 void stop_selected_group();
 void update_session_ui();
+void refresh_status_list();
 std::filesystem::path workdir_root();
 
 void add_edit(HWND parent, int id, int x, int y, int width,
@@ -282,8 +287,27 @@ void build_ui(HWND window) {
     SendMessageW(g_session_status, WM_SETFONT,
                  reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 
+    add_label(window, L"机器人实时状态", 20, 820, 300);
+    g_status_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                    WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+                                    20, 846, 1140, 180, window,
+                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_LIST)),
+                                    GetModuleHandleW(nullptr), nullptr);
+    ListView_SetExtendedListViewStyle(g_status_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    add_column(g_status_list, 0, 110, L"机器人");
+    add_column(g_status_list, 1, 110, L"模式");
+    add_column(g_status_list, 2, 70, L"连接");
+    add_column(g_status_list, 3, 70, L"上电");
+    add_column(g_status_list, 4, 70, L"使能");
+    add_column(g_status_list, 5, 70, L"拖动");
+    add_column(g_status_list, 6, 70, L"伺服");
+    add_column(g_status_list, 7, 170, L"故障");
+    add_column(g_status_list, 8, 90, L"数据年龄ms");
+    add_column(g_status_list, 9, 90, L"序列");
+
     fill_robot_list();
     fill_group_list();
+    refresh_status_list();
     set_status(g_registry_path.empty() ? L"未找到配置文件" : L"配置：" + g_registry_path.wstring());
 }
 
@@ -392,6 +416,70 @@ bool read_robot_form(windows_jaka::RobotProfile& robot, std::string& error) {
         return false;
     }
     return true;
+}
+
+std::unordered_map<std::string, std::string> read_status_file(const std::filesystem::path& path) {
+    std::unordered_map<std::string, std::string> values;
+    std::ifstream input(path);
+    if (!input.is_open()) return values;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        values[line.substr(0, equals)] = line.substr(equals + 1);
+    }
+    return values;
+}
+
+std::wstring status_yes_no(const std::unordered_map<std::string, std::string>& values,
+                           const std::string& key) {
+    const auto found = values.find(key);
+    if (found == values.end()) return L"-";
+    return (found->second == "1" || found->second == "true") ? L"是" : L"否";
+}
+
+void refresh_status_list() {
+    if (!g_status_list) return;
+    g_suppress_selection = true;
+    ListView_DeleteAllItems(g_status_list);
+    for (std::size_t i = 0; i < g_registry.robots.size(); ++i) {
+        const auto& robot = g_registry.robots[i];
+        const auto path = g_status_directory / (widen(robot.id) + L".status");
+        const auto values = read_status_file(path);
+        auto value = [&](const std::string& key, const std::wstring& fallback = L"-") -> std::wstring {
+            const auto found = values.find(key);
+            return found == values.end() || found->second.empty() ? fallback : widen(found->second);
+        };
+        std::wstring mode = value("mode", L"未运行");
+        if (values.empty()) mode = L"未运行";
+        std::wstring alarm = value("alarm", L"");
+        if (alarm.empty()) alarm = L"无";
+
+        std::wstring id = widen(robot.id);
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = static_cast<int>(i);
+        item.pszText = id.data();
+        const int row = ListView_InsertItem(g_status_list, &item);
+        std::wstring connected = values.empty() ? L"-" : status_yes_no(values, "connected");
+        std::wstring powered = values.empty() ? L"-" : status_yes_no(values, "powered");
+        std::wstring enabled = values.empty() ? L"-" : status_yes_no(values, "enabled");
+        std::wstring dragging = values.empty() ? L"-" : status_yes_no(values, "dragging");
+        std::wstring servo = values.empty() ? L"-" : status_yes_no(values, "servo");
+        std::wstring age = value("packet_age_ms", L"-");
+        std::wstring sequence = value("sequence", L"-");
+        ListView_SetItemText(g_status_list, row, 1, mode.data());
+        ListView_SetItemText(g_status_list, row, 2, connected.data());
+        ListView_SetItemText(g_status_list, row, 3, powered.data());
+        ListView_SetItemText(g_status_list, row, 4, enabled.data());
+        ListView_SetItemText(g_status_list, row, 5, dragging.data());
+        ListView_SetItemText(g_status_list, row, 6, servo.data());
+        ListView_SetItemText(g_status_list, row, 7, alarm.data());
+        ListView_SetItemText(g_status_list, row, 8, age.data());
+        ListView_SetItemText(g_status_list, row, 9, sequence.data());
+    }
+    g_suppress_selection = false;
 }
 
 void load_group_form(int index) {
@@ -514,8 +602,14 @@ void start_selected_group() {
         quote_w(launcher.wstring()) +
         L" -RegistryPath " + quote_w(g_registry_path.wstring()) +
         L" -GroupId " + quote_w(widen(group_id)) +
-        L" -BasePort 30101";
+        L" -BasePort 30101 -StatusDirectory " + quote_w(g_status_directory.wstring());
     command += real_motion ? L" -ArmMotion" : L" -DryRun";
+
+    std::error_code ignored;
+    std::filesystem::remove(g_status_directory / (widen(plan.operator_robot.id) + L".status"), ignored);
+    for (const auto& follower : plan.follower_robots) {
+        std::filesystem::remove(g_status_directory / (widen(follower.id) + L".status"), ignored);
+    }
 
     std::vector<wchar_t> command_line(command.begin(), command.end());
     command_line.push_back(L'\0');
@@ -696,10 +790,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         g_window = window;
         build_ui(window);
         update_session_ui();
-        SetTimer(window, ID_SESSION_TIMER, 250, nullptr);
+        SetTimer(window, ID_SESSION_TIMER, 500, nullptr);
         return 0;
     case WM_TIMER:
         if (wparam == ID_SESSION_TIMER) {
+            refresh_status_list();
             if (g_session_process && !session_running()) {
                 if (g_session_job) CloseHandle(g_session_job);
                 if (g_session_process) CloseHandle(g_session_process);
@@ -764,6 +859,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     InitCommonControlsEx(&controls);
 
     g_registry_path = registry_path();
+    g_status_directory = workdir_root() / L"status";
+    std::filesystem::create_directories(g_status_directory);
     std::string error;
     std::filesystem::path load_path = g_registry_path;
     if (!std::filesystem::exists(load_path) && std::filesystem::exists(example_registry_path())) {
@@ -787,7 +884,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
 
     HWND window = CreateWindowExW(0, window_class.lpszClassName, L"JAKA 多机器人管理",
                                   WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, 1220, 880,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, 1220, 1100,
                                   nullptr, nullptr, instance, nullptr);
     if (!window) return 2;
     ShowWindow(window, show_command);

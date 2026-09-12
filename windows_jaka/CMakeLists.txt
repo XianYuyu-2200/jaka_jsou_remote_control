@@ -119,6 +119,10 @@ if(BUILD_TESTING)
     target_include_directories(runtime_plan_test PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     add_test(NAME runtime_plan_test COMMAND runtime_plan_test)
 
+    add_executable(runtime_status_test tests/runtime_status_test.cpp)
+    target_include_directories(runtime_status_test PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
+    add_test(NAME runtime_status_test COMMAND runtime_status_test)
+
     add_executable(dry_run_test tests/dry_run_test.cpp)
     target_include_directories(dry_run_test PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     add_test(NAME dry_run_test COMMAND dry_run_test)

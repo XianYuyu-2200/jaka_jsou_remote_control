@@ -58,3 +58,6 @@ __pycache__/
 
 # Local robot configuration
 /config/robots.ini
+
+# Runtime status files
+/status/

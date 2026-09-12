@@ -5,6 +5,7 @@
 #include "joint_mapping.hpp"
 #include "joint_sample_packet.hpp"
 #include "runtime_control.hpp"
+#include "runtime_status.hpp"
 #include "trajectory.hpp"
 #include "udp_transport.hpp"
 #include "windows_clock.hpp"
@@ -39,12 +40,14 @@ BOOL WINAPI console_handler(DWORD type) {
 }
 
 struct Options {
+    std::string robot_id{"operator"};
     std::string operator_ip{"192.168.0.101"};
     std::uint16_t port{30001};
     std::vector<std::uint16_t> peer_ports;
     double duration_sec{0.0};
     std::string record_file;
     std::string playback_file;
+    std::string status_file;
     double playback_speed{1.0};
     bool arm_motion{false};
     std::wstring control_pipe{L"\\\\.\\pipe\\jaka_operator_teleop"};
@@ -69,11 +72,13 @@ Options parse_options(int argc, char** argv) {
             if (i + 1 >= argc) throw std::invalid_argument(std::string("missing value for ") + name);
             return argv[++i];
         };
-        if (arg == "--operator-ip") options.operator_ip = next("--operator-ip");
+        if (arg == "--robot-id") options.robot_id = next("--robot-id");
+        else if (arg == "--operator-ip") options.operator_ip = next("--operator-ip");
         else if (arg == "--port") options.port = parse_port(next("--port"));
         else if (arg == "--peer-port") options.peer_ports.push_back(parse_port(next("--peer-port")));
         else if (arg == "--duration-sec") options.duration_sec = std::stod(next("--duration-sec"));
         else if (arg == "--record-file") options.record_file = next("--record-file");
+        else if (arg == "--status-file") options.status_file = next("--status-file");
         else if (arg == "--playback-file") options.playback_file = next("--playback-file");
         else if (arg == "--playback-speed") options.playback_speed = std::stod(next("--playback-speed"));
         else if (arg == "--arm-motion") options.arm_motion = true;
@@ -89,6 +94,7 @@ Options parse_options(int argc, char** argv) {
         else if (arg == "--max-acceleration") options.max_acceleration = std::stod(next("--max-acceleration"));
         else if (arg == "--help" || arg == "-h") {
             std::cout << "windows_operator.exe [--operator-ip IP] [--port N] [--duration-sec S]"
+                         " [--robot-id ID] [--status-file PATH]"
                          " [--peer-port N ...]"
                          " [--record-file PATH] [--playback-file PATH] [--playback-speed 1.0]"
                          " [--dry-run|--arm-motion]"
@@ -341,6 +347,7 @@ int main(int argc, char** argv) {
         std::uint64_t sent = 0;
         std::uint64_t read_errors = 0;
         std::uint64_t send_errors = 0;
+        std::string status_write_error_reported;
         std::ofstream record;
         if (record_enabled) {
             record.open(options.record_file, std::ios::out | std::ios::trunc);
@@ -608,6 +615,29 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < 6; ++i) recorded[i] = joints.jVal[i];
                 const std::uint64_t time_ms = (tick_ns - start_ns) / 1'000'000ULL;
                 windows_jaka::write_trajectory_point(record, time_ms, recorded);
+            }
+
+            if (!options.status_file.empty() && packet.sequence % 31 == 0) {
+                const double elapsed_s = static_cast<double>(packet.monotonic_ns - start_ns) / 1e9;
+                windows_jaka::RuntimeStatus runtime_status;
+                runtime_status.robot_id = options.robot_id;
+                runtime_status.mode = options.control_mode;
+                runtime_status.alarm = stop_reason;
+                runtime_status.connected = logged_in && state_ok.load();
+                runtime_status.powered = cached_powered.load() != 0;
+                runtime_status.enabled = cached_enabled.load() != 0;
+                runtime_status.dragging = cached_dragging.load() != 0;
+                runtime_status.valid = packet.operator_valid != 0;
+                runtime_status.servo = servo_enabled;
+                runtime_status.sequence = packet.sequence;
+                runtime_status.rate_hz = elapsed_s > 0.0 ? packet.sequence / elapsed_s : 0.0;
+                std::string status_error;
+                if (!windows_jaka::write_runtime_status(options.status_file, runtime_status, status_error)) {
+                    if (status_write_error_reported.empty()) {
+                        status_write_error_reported = status_error;
+                        std::cerr << "operator status write failed: " << status_error << "\n";
+                    }
+                }
             }
 
             if (packet.sequence % 125 == 0) {

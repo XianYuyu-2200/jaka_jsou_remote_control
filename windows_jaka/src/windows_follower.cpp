@@ -5,6 +5,7 @@
 #include "joint_mapping.hpp"
 #include "joint_sample_packet.hpp"
 #include "runtime_control.hpp"
+#include "runtime_status.hpp"
 #include "trajectory.hpp"
 #include "udp_transport.hpp"
 #include "waitable_timer.hpp"
@@ -36,11 +37,13 @@ BOOL WINAPI console_handler(DWORD type) {
 }
 
 struct Options {
+    std::string robot_id{"follower"};
     std::string follower_ip{"192.168.0.102"};
     std::uint16_t port{30001};
     double duration_sec{0.0};
     std::string record_file;
     std::string playback_file;
+    std::string status_file;
     double playback_speed{1.0};
     bool arm_motion{false};
     bool offline{false};
@@ -66,10 +69,12 @@ Options parse_options(int argc, char** argv) {
             if (i + 1 >= argc) throw std::invalid_argument(std::string("missing value for ") + name);
             return argv[++i];
         };
-        if (arg == "--follower-ip") options.follower_ip = next("--follower-ip");
+        if (arg == "--robot-id") options.robot_id = next("--robot-id");
+        else if (arg == "--follower-ip") options.follower_ip = next("--follower-ip");
         else if (arg == "--port") options.port = parse_port(next("--port"));
         else if (arg == "--duration-sec") options.duration_sec = std::stod(next("--duration-sec"));
         else if (arg == "--record-file") options.record_file = next("--record-file");
+        else if (arg == "--status-file") options.status_file = next("--status-file");
         else if (arg == "--playback-file") options.playback_file = next("--playback-file");
         else if (arg == "--playback-speed") options.playback_speed = std::stod(next("--playback-speed"));
         else if (arg == "--arm-motion") options.arm_motion = true;
@@ -86,6 +91,7 @@ Options parse_options(int argc, char** argv) {
         else if (arg == "--control-mode") options.control_mode = next("--control-mode");
         else if (arg == "--help" || arg == "-h") {
             std::cout << "windows_follower.exe [--follower-ip IP] [--port N] [--duration-sec S]"
+                         " [--robot-id ID] [--status-file PATH]"
                          " [--record-file PATH] [--playback-file PATH] [--playback-speed 1.0]"
                          " [--dry-run|--arm-motion] [--offline]"
                          " [--filter none|lpf|nlf] [--lpf-cutoff 2.5]"
@@ -305,6 +311,11 @@ int main(int argc, char** argv) {
             std::uint64_t last_sequence = 0;
             std::uint64_t last_processed_received_ns = 0;
             std::uint64_t last_manual_jog_ns = 0;
+            std::uint64_t status_tick = 0;
+            bool status_robot_powered = false;
+            bool status_robot_enabled = false;
+            bool status_robot_dragging = false;
+            std::string status_write_error_reported;
             const std::uint64_t start_ns = windows_jaka::monotonic_ns();
             std::vector<windows_jaka::TrajectoryPoint> playback_points;
             windows_jaka::JointArray playback_offset{};
@@ -324,6 +335,8 @@ int main(int argc, char** argv) {
                     RobotStatus_simple status{};
                     const int status_ret = robot.get_robot_status_simple(&status);
                     if (status_ret != 0 || !status.powered_on || !status.enabled) throw std::runtime_error("follower must already be powered and enabled");
+                    status_robot_powered = status.powered_on != 0;
+                    status_robot_enabled = status.enabled != 0;
                     JointValue initial{};
                     const int initial_ret = robot.get_actual_joint_position(&initial);
                     if (initial_ret != 0) throw std::runtime_error("follower initial joint read failed");
@@ -649,6 +662,46 @@ int main(int argc, char** argv) {
                         const std::uint64_t time_ms = (tick_ns - start_ns) / 1'000'000ULL;
                         windows_jaka::write_trajectory_point(record, time_ms, recorded);
                     }
+                    ++status_tick;
+                    if (!options.status_file.empty() && status_tick % 62 == 0) {
+                        if (status_tick % 124 == 0) {
+                            RobotStatus_simple robot_status{};
+                            BOOL dragging = FALSE;
+                            const int status_ret = robot.get_robot_status_simple(&robot_status);
+                            const int drag_ret = robot.is_in_drag_mode(&dragging);
+                            if (status_ret == 0) {
+                                status_robot_powered = robot_status.powered_on != 0;
+                                status_robot_enabled = robot_status.enabled != 0;
+                            }
+                            if (drag_ret == 0) status_robot_dragging = dragging != 0;
+                        }
+                        const double elapsed_s = static_cast<double>(tick_ns - start_ns) / 1e9;
+                        windows_jaka::RuntimeStatus runtime_status;
+                        runtime_status.robot_id = options.robot_id;
+                        runtime_status.mode = options.control_mode;
+                        runtime_status.alarm = fault.get();
+                        runtime_status.connected = logged_in;
+                        runtime_status.powered = status_robot_powered;
+                        runtime_status.enabled = status_robot_enabled;
+                        runtime_status.dragging = status_robot_dragging;
+                        runtime_status.valid = !fault.fault.load();
+                        runtime_status.servo = servo_enabled;
+                        runtime_status.sequence = last_sequence;
+                        runtime_status.watchdog_ticks = watchdog_ticks;
+                        runtime_status.rate_hz = elapsed_s > 0.0 ? last_sequence / elapsed_s : 0.0;
+                        if (last_processed_received_ns != 0 && tick_ns >= last_processed_received_ns) {
+                            runtime_status.packet_age_ms =
+                                static_cast<double>(tick_ns - last_processed_received_ns) / 1e6;
+                        }
+                        std::string status_error;
+                        if (!windows_jaka::write_runtime_status(options.status_file, runtime_status, status_error)) {
+                            if (status_write_error_reported.empty()) {
+                                status_write_error_reported = status_error;
+                                std::cerr << "follower status write failed: " << status_error << "\n";
+                            }
+                        }
+                    }
+
                 }
             } catch (const std::exception& error) {
                 fault.set(error.what());
