@@ -107,6 +107,10 @@ if(BUILD_TESTING)
     target_include_directories(trajectory_test PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     add_test(NAME trajectory_test COMMAND trajectory_test)
 
+    add_executable(robot_registry_test tests/robot_registry_test.cpp)
+    target_include_directories(robot_registry_test PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
+    add_test(NAME robot_registry_test COMMAND robot_registry_test)
+
     add_executable(dry_run_test tests/dry_run_test.cpp)
     target_include_directories(dry_run_test PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     add_test(NAME dry_run_test COMMAND dry_run_test)
