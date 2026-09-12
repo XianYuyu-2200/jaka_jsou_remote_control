@@ -4,6 +4,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 
 #include "control_pipe.hpp"
 #include "robot_registry.hpp"
@@ -19,6 +20,7 @@
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 namespace {
 
@@ -58,6 +60,10 @@ constexpr int ID_GROUP_START = 1303;
 constexpr int ID_GROUP_STOP = 1304;
 constexpr int ID_SESSION_STATUS = 1305;
 constexpr int ID_STATUS_LIST = 1306;
+constexpr int ID_SINGLE_JOINT = 1400;
+constexpr int ID_SINGLE_RECORD = 1401;
+constexpr int ID_SINGLE_PLAYBACK = 1402;
+constexpr int ID_SINGLE_STOP = 1403;
 constexpr UINT_PTR ID_SESSION_TIMER = 1;
 
 HWND g_window{};
@@ -69,6 +75,10 @@ HWND g_status_list{};
 HANDLE g_session_process{};
 HANDLE g_session_job{};
 std::filesystem::path g_status_directory;
+enum class SessionKind { None, Group, Single };
+SessionKind g_session_kind{SessionKind::None};
+std::string g_single_robot_id;
+std::wstring g_single_control_pipe;
 windows_jaka::RobotRegistry g_registry;
 std::filesystem::path g_registry_path;
 std::vector<HWND> g_robot_controls;
@@ -172,6 +182,8 @@ void start_selected_group();
 void stop_selected_group();
 void update_session_ui();
 void refresh_status_list();
+void start_single_session(const std::string& control_mode);
+void stop_selected_group();
 std::filesystem::path workdir_root();
 
 void add_edit(HWND parent, int id, int x, int y, int width,
@@ -247,6 +259,15 @@ void build_ui(HWND window) {
                 800, 400, 120, 34, ID_SAVE, &g_robot_controls);
     add_control(window, L"BUTTON", L"重新加载", WS_TABSTOP | BS_PUSHBUTTON,
                 930, 400, 120, 34, ID_RELOAD, &g_robot_controls);
+    add_label(window, L"单台机器人控制", 390, 452, 150, &g_robot_controls);
+    add_control(window, L"BUTTON", L"关节控制", WS_TABSTOP | BS_PUSHBUTTON,
+                540, 444, 100, 34, ID_SINGLE_JOINT, &g_robot_controls);
+    add_control(window, L"BUTTON", L"轨迹录制", WS_TABSTOP | BS_PUSHBUTTON,
+                650, 444, 100, 34, ID_SINGLE_RECORD, &g_robot_controls);
+    add_control(window, L"BUTTON", L"轨迹回放", WS_TABSTOP | BS_PUSHBUTTON,
+                760, 444, 100, 34, ID_SINGLE_PLAYBACK, &g_robot_controls);
+    add_control(window, L"BUTTON", L"停止单台", WS_TABSTOP | BS_PUSHBUTTON,
+                870, 444, 100, 34, ID_SINGLE_STOP, &g_robot_controls);
 
     add_label(window, L"遥操作组", 20, 520, 300);
     g_group_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
@@ -273,7 +294,7 @@ void build_ui(HWND window) {
                 520, 680, 120, 34, ID_GROUP_APPLY, &g_group_controls);
     add_control(window, L"BUTTON", L"删除组", WS_TABSTOP | BS_PUSHBUTTON,
                 650, 680, 120, 34, ID_GROUP_DELETE, &g_group_controls);
-    add_control(window, L"BUTTON", L"真实运动授权", BS_AUTOCHECKBOX,
+    add_control(window, L"BUTTON", L"真实运动授权（组/单台）", BS_AUTOCHECKBOX,
                 390, 730, 150, 28, ID_GROUP_REAL_MOTION, &g_group_controls);
     add_control(window, L"BUTTON", L"启动选中组", WS_TABSTOP | BS_PUSHBUTTON,
                 550, 726, 120, 34, ID_GROUP_START, &g_group_controls);
@@ -566,6 +587,10 @@ void update_session_ui() {
     EnableWindow(GetDlgItem(g_window, ID_GROUP_START), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_window, ID_GROUP_STOP), running ? TRUE : FALSE);
     EnableWindow(GetDlgItem(g_window, ID_GROUP_REAL_MOTION), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(g_window, ID_SINGLE_JOINT), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(g_window, ID_SINGLE_RECORD), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(g_window, ID_SINGLE_PLAYBACK), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(g_window, ID_SINGLE_STOP), running ? TRUE : FALSE);
     if (g_session_status && !running) {
         SetWindowTextW(g_session_status, L"会话未启动");
     }
@@ -639,6 +664,9 @@ void start_selected_group() {
 
     CloseHandle(process.hThread);
     g_session_process = process.hProcess;
+    g_session_kind = SessionKind::Group;
+    g_single_robot_id.clear();
+    g_single_control_pipe.clear();
     g_session_job = CreateJobObjectW(nullptr, nullptr);
     if (g_session_job) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -658,17 +686,124 @@ void start_selected_group() {
     update_session_ui();
 }
 
+void start_single_session(const std::string& control_mode) {
+    if (session_running()) {
+        set_status(L"当前已有会话在运行");
+        return;
+    }
+    const int index = selected_index(g_robot_list);
+    if (index < 0 || index >= static_cast<int>(g_registry.robots.size())) {
+        set_status(L"请先选择一台机器人");
+        return;
+    }
+    if (!save_registry()) return;
+
+    const auto& robot = g_registry.robots[static_cast<std::size_t>(index)];
+    if (!robot.enabled) {
+        set_status(L"选中的机器人已被禁用");
+        return;
+    }
+    const auto launcher = workdir_root() / L"windows_jaka" / L"run_single_robot.ps1";
+    if (!std::filesystem::exists(launcher)) {
+        set_status(L"找不到单台启动脚本：" + launcher.wstring());
+        return;
+    }
+
+    std::wstring playback_file;
+    if (control_mode == "playback") {
+        wchar_t file_name[MAX_PATH]{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = g_window;
+        dialog.lpstrFilter = L"JAKA 关节轨迹 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0\0";
+        dialog.lpstrFile = file_name;
+        dialog.nMaxFile = static_cast<DWORD>(std::size(file_name));
+        const std::wstring initial_log_dir = (workdir_root() / L"logs").wstring();
+        dialog.lpstrInitialDir = initial_log_dir.c_str();
+        dialog.lpstrTitle = L"选择关节轨迹";
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
+        if (!GetOpenFileNameW(&dialog)) return;
+        playback_file = file_name;
+    }
+
+    const bool real_motion =
+        SendMessageW(GetDlgItem(g_window, ID_GROUP_REAL_MOTION), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    std::wstring command = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
+        quote_w(launcher.wstring()) +
+        L" -RegistryPath " + quote_w(g_registry_path.wstring()) +
+        L" -RobotId " + quote_w(widen(robot.id)) +
+        L" -ControlMode " + quote_w(widen(control_mode)) +
+        L" -StatusDirectory " + quote_w(g_status_directory.wstring());
+    if (!playback_file.empty()) command += L" -PlaybackFile " + quote_w(playback_file);
+    command += real_motion ? L" -ArmMotion" : L" -DryRun";
+
+    const std::wstring pipe = L"\\\\.\\pipe\\jaka_single_" + widen(windows_jaka::safe_pipe_component(robot.id));
+    g_single_control_pipe = pipe;
+    g_single_robot_id = robot.id;
+    std::error_code ignored;
+    std::filesystem::remove(g_status_directory / (widen(robot.id) + L".status"), ignored);
+
+    std::vector<wchar_t> command_line(command.begin(), command.end());
+    command_line.push_back(L'\0');
+    std::wstring old_motion;
+    const DWORD old_length = GetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", nullptr, 0);
+    if (old_length > 0) {
+        old_motion.resize(old_length);
+        GetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", old_motion.data(), old_length);
+        old_motion.resize(old_length - 1);
+    }
+    SetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", real_motion ? L"1" : nullptr);
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE,
+                                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                                        nullptr, workdir_root().c_str(), &startup, &process);
+    const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
+    SetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", old_motion.empty() ? nullptr : old_motion.c_str());
+    if (!created) {
+        set_status(L"启动单台机器人失败，Windows 错误码=" + std::to_wstring(create_error));
+        return;
+    }
+
+    CloseHandle(process.hThread);
+    g_session_process = process.hProcess;
+    g_session_kind = SessionKind::Single;
+    g_session_job = CreateJobObjectW(nullptr, nullptr);
+    if (g_session_job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(g_session_job, JobObjectExtendedLimitInformation,
+                                     &limits, sizeof(limits)) ||
+            !AssignProcessToJobObject(g_session_job, g_session_process)) {
+            CloseHandle(g_session_job);
+            g_session_job = nullptr;
+        }
+    }
+    if (g_session_status) SetWindowTextW(g_session_status, L"单台会话运行中");
+    set_status((real_motion ? L"真实运动单台已启动：" : L"Dry-run 单台已启动：") +
+               widen(robot.id) + L"，模式=" + widen(control_mode));
+    update_session_ui();
+}
+
 void stop_selected_group() {
     if (!g_session_process) return;
-    windows_jaka::TeleopRuntimePlan plan;
-    std::string error;
-    const int index = selected_index(g_group_list);
-    if (index >= 0 && index < static_cast<int>(g_registry.groups.size())) {
-        const std::string group_id = g_registry.groups[static_cast<std::size_t>(index)].id;
-        if (windows_jaka::build_teleop_runtime_plan(g_registry, group_id, 30101, plan, error)) {
-            windows_jaka::send_control_command(widen(plan.operator_control_pipe), "STOP");
-            for (const auto& endpoint : plan.follower_endpoints) {
-                windows_jaka::send_control_command(widen(endpoint.control_pipe), "STOP");
+    if (g_session_kind == SessionKind::Single) {
+        if (!g_single_control_pipe.empty()) {
+            windows_jaka::send_control_command(g_single_control_pipe, "STOP");
+        }
+    } else {
+        windows_jaka::TeleopRuntimePlan plan;
+        std::string error;
+        const int index = selected_index(g_group_list);
+        if (index >= 0 && index < static_cast<int>(g_registry.groups.size())) {
+            const std::string group_id = g_registry.groups[static_cast<std::size_t>(index)].id;
+            if (windows_jaka::build_teleop_runtime_plan(g_registry, group_id, 30101, plan, error)) {
+                windows_jaka::send_control_command(widen(plan.operator_control_pipe), "STOP");
+                for (const auto& endpoint : plan.follower_endpoints) {
+                    windows_jaka::send_control_command(widen(endpoint.control_pipe), "STOP");
+                }
             }
         }
     }
@@ -682,7 +817,10 @@ void stop_selected_group() {
     g_session_job = nullptr;
     g_session_process = nullptr;
     if (g_session_status) SetWindowTextW(g_session_status, L"会话已停止");
-    set_status(L"组会话已停止");
+    set_status(L"会话已停止");
+    g_session_kind = SessionKind::None;
+    g_single_robot_id.clear();
+    g_single_control_pipe.clear();
     update_session_ui();
 }
 
@@ -762,6 +900,18 @@ void handle_command(int id) {
     case ID_SAVE:
         save_registry();
         break;
+    case ID_SINGLE_JOINT:
+        start_single_session("joint");
+        break;
+    case ID_SINGLE_RECORD:
+        start_single_session("record");
+        break;
+    case ID_SINGLE_PLAYBACK:
+        start_single_session("playback");
+        break;
+    case ID_SINGLE_STOP:
+        stop_selected_group();
+        break;
     case ID_GROUP_START:
         start_selected_group();
         break;
@@ -800,6 +950,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 if (g_session_process) CloseHandle(g_session_process);
                 g_session_job = nullptr;
                 g_session_process = nullptr;
+                g_session_kind = SessionKind::None;
+                g_single_robot_id.clear();
+                g_single_control_pipe.clear();
                 if (g_session_status) SetWindowTextW(g_session_status, L"会话进程已退出");
                 update_session_ui();
             }
