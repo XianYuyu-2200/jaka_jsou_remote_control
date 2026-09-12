@@ -119,13 +119,15 @@ try {
         if ($DurationSec -gt 0) { $followerArgs += @("--duration-sec", "$DurationSec") }
         if ($ArmMotion) { $followerArgs += "--arm-motion" } else { $followerArgs += "--dry-run" }
         Write-Host "Starting follower $id ip=$($section['ip']) udp=$port pipe=$pipe"
-        $processes += Start-Process -FilePath $selected.Follower -ArgumentList $followerArgs -PassThru -NoNewWindow
+        $process = Start-Process -FilePath $selected.Follower -ArgumentList $followerArgs -PassThru -NoNewWindow
+        $processes += $process
+        $processRecords += [pscustomobject]@{ Label = "follower:$id"; Process = $process }
     }
 
     Start-Sleep -Seconds 3
-    foreach ($process in $processes) {
-        $process.Refresh()
-        if ($process.HasExited) { throw "A follower failed to start (exit code $($process.ExitCode))." }
+    foreach ($record in $processRecords) {
+        $record.Process.Refresh()
+        if ($record.Process.HasExited) { throw "$($record.Label) failed to start (exit code $($record.Process.ExitCode))." }
     }
 
     $operatorPipe = "\\.\pipe\jaka_multi_operator_$($GroupId -replace '[^A-Za-z0-9_-]', '_')"
@@ -147,13 +149,20 @@ try {
     Write-Host "Starting operator $operatorId ip=$($operatorSection['ip']) followers=$($followerIds -join ',')"
     $operator = Start-Process -FilePath $selected.Operator -ArgumentList $operatorArgs -PassThru -NoNewWindow
     $processes += $operator
+    $processRecords += [pscustomobject]@{ Label = "operator:$operatorId"; Process = $operator }
 
     Write-Host "Group $GroupId running. Press Ctrl+C to stop the group."
     while ($true) {
         Start-Sleep -Milliseconds 250
-        foreach ($process in $processes) {
-            $process.Refresh()
-            if ($process.HasExited) { throw "A group process exited unexpectedly (exit code $($process.ExitCode))." }
+        foreach ($record in $processRecords) {
+            $record.Process.Refresh()
+            if ($record.Process.HasExited) {
+                if ($DurationSec -gt 0) {
+                    if (($processRecords | Where-Object { -not $_.Process.HasExited }).Count -eq 0) { exit 0 }
+                    continue
+                }
+                throw "$($record.Label) exited unexpectedly (exit code $($record.Process.ExitCode))."
+            }
         }
     }
 }

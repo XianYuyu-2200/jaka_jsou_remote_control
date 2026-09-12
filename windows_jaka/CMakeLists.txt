@@ -74,10 +74,6 @@ if(NOT WINDOWS_JAKA_TEST_ONLY)
     target_include_directories(windows_teleop_gui PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     target_link_libraries(windows_teleop_gui PRIVATE comctl32 shell32 user32 gdi32 gdiplus)
 
-    add_executable(windows_robot_manager WIN32 src/windows_robot_manager.cpp)
-    target_include_directories(windows_robot_manager PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
-    target_link_libraries(windows_robot_manager PRIVATE comctl32 user32)
-
     set(JAKA_GUI_LOGO "${CMAKE_CURRENT_SOURCE_DIR}/../江苏开放大学.png")
     if(EXISTS "${JAKA_GUI_LOGO}")
         add_custom_command(TARGET windows_teleop_gui POST_BUILD
@@ -96,6 +92,10 @@ if(NOT WINDOWS_JAKA_TEST_ONLY)
                 "$<TARGET_FILE_DIR:${target}>/jakaAPI.dll")
     endforeach()
 endif()
+
+add_executable(windows_robot_manager WIN32 src/windows_robot_manager.cpp)
+target_include_directories(windows_robot_manager PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
+target_link_libraries(windows_robot_manager PRIVATE comctl32 user32)
 
 include(CTest)
 if(BUILD_TESTING)

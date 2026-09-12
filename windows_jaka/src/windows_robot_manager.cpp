@@ -17,6 +17,7 @@
 #include <memory>
 #include <set>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -91,6 +92,7 @@ struct ActiveSession {
     std::vector<std::string> robot_ids;
     std::string mode;
     std::uint16_t base_port{0};
+    std::filesystem::path log_path;
     ~ActiveSession() {
         if (job) CloseHandle(job);
         if (process) CloseHandle(process);
@@ -696,6 +698,7 @@ std::uint16_t allocate_group_port(int follower_count) {
 }
 
 bool launch_session_command(const std::wstring& command, bool real_motion,
+                            const std::filesystem::path& log_path,
                             HANDLE& process_out, HANDLE& job_out, DWORD& error_code) {
     std::vector<wchar_t> command_line(command.begin(), command.end());
     command_line.push_back(L'\0');
@@ -708,12 +711,32 @@ bool launch_session_command(const std::wstring& command, bool real_motion,
     }
     SetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", real_motion ? L"1" : nullptr);
 
+    std::error_code directory_error;
+    std::filesystem::create_directories(log_path.parent_path(), directory_error);
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    HANDLE log_handle = CreateFileW(log_path.c_str(), FILE_APPEND_DATA,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+                                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (log_handle != INVALID_HANDLE_VALUE) {
+        SetFilePointer(log_handle, 0, nullptr, FILE_END);
+    }
+
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
+    if (log_handle != INVALID_HANDLE_VALUE) {
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = log_handle;
+        startup.hStdError = log_handle;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    }
     PROCESS_INFORMATION process{};
-    const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE,
+    const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr,
+                                        log_handle != INVALID_HANDLE_VALUE ? TRUE : FALSE,
                                         CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
                                         nullptr, workdir_root().c_str(), &startup, &process);
+    if (log_handle != INVALID_HANDLE_VALUE) CloseHandle(log_handle);
     error_code = created ? ERROR_SUCCESS : GetLastError();
     SetEnvironmentVariableW(L"JAKA_ENABLE_MOTION", old_motion.empty() ? nullptr : old_motion.c_str());
     if (!created) return false;
@@ -754,11 +777,37 @@ void remove_session(const std::string& key) {
         g_sessions.end());
 }
 
+std::wstring last_log_line(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    std::string line;
+    std::string last;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) last = line;
+    }
+    return widen(last);
+}
+
 void prune_exited_sessions() {
+    bool exited = false;
+    std::wstring message;
+    for (const auto& session : g_sessions) {
+        if (session->process && WaitForSingleObject(session->process, 0) != WAIT_TIMEOUT) {
+            exited = true;
+            const std::wstring detail = last_log_line(session->log_path);
+            message = L"会话已退出：" + widen(session->label);
+            if (!detail.empty()) message += L" - " + detail;
+            break;
+        }
+    }
     g_sessions.erase(std::remove_if(g_sessions.begin(), g_sessions.end(),
         [](const std::unique_ptr<ActiveSession>& session) {
             return !session->process || WaitForSingleObject(session->process, 0) != WAIT_TIMEOUT;
         }), g_sessions.end());
+    if (exited) {
+        set_status(message);
+        if (g_session_status && g_sessions.empty()) SetWindowTextW(g_session_status, message.c_str());
+    }
 }
 
 void update_session_ui() {
@@ -859,7 +908,7 @@ void start_selected_group() {
     HANDLE process = nullptr;
     HANDLE job = nullptr;
     DWORD error_code = ERROR_SUCCESS;
-    if (!launch_session_command(command, real_motion, process, job, error_code)) {
+    if (!launch_session_command(command, real_motion, g_status_directory / (widen(group_id) + L".log"), process, job, error_code)) {
         set_status(L"启动组失败，Windows 错误码=" + std::to_wstring(error_code));
         return;
     }
@@ -877,6 +926,7 @@ void start_selected_group() {
         session->robot_ids.push_back(endpoint.robot_id);
     }
     session->base_port = base_port;
+    session->log_path = g_status_directory / (widen(group_id) + L".log");
     g_sessions.push_back(std::move(session));
     set_status((real_motion ? L"真实运动组已启动：" : L"Dry-run 组已启动：") +
                widen(group_id) + L"，跟随臂=" + std::to_wstring(plan.follower_endpoints.size()));
@@ -1015,7 +1065,7 @@ void start_single_session(const std::string& control_mode) {
     HANDLE process = nullptr;
     HANDLE job = nullptr;
     DWORD error_code = ERROR_SUCCESS;
-    if (!launch_session_command(command, real_motion, process, job, error_code)) {
+    if (!launch_session_command(command, real_motion, g_status_directory / (widen(robot.id) + L".log"), process, job, error_code)) {
         set_status(L"启动单台机器人失败，Windows 错误码=" + std::to_wstring(error_code));
         return;
     }
@@ -1029,6 +1079,7 @@ void start_single_session(const std::string& control_mode) {
     session->stop_pipes.push_back(pipe);
     session->robot_ids.push_back(robot.id);
     session->mode = control_mode;
+    session->log_path = g_status_directory / (widen(robot.id) + L".log");
     g_sessions.push_back(std::move(session));
     set_status((real_motion ? L"真实运动单台已启动：" : L"Dry-run 单台已启动：") +
                widen(robot.id) + L"，模式=" + widen(control_mode));
