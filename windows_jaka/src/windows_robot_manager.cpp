@@ -284,12 +284,12 @@ void build_ui(HWND window) {
     add_control(window, L"STATIC", L"设备管理  /  单臂控制  /  一拖多遥操作  /  实时诊断",
                 SS_LEFT, 26, 52, 620, 26, 0, nullptr);
     g_status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
-                               700, 20, 570, 40, window,
+                               620, 20, 470, 40, window,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS)),
                                GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
     add_control(window, L"BUTTON", L"实时状态", WS_TABSTOP | BS_PUSHBUTTON,
-                1110, 20, 140, 40, ID_OPEN_STATUS_PAGE, nullptr);
+                1105, 20, 145, 40, ID_OPEN_STATUS_PAGE, nullptr);
 
     add_group_box(window, L"机器人设备与参数", 16, 84, 1228, 462);
     add_label(window, L"机器人列表", 34, 106, 260);
@@ -432,31 +432,12 @@ void build_ui(HWND window) {
         g_robot_controls.push_back(plus);
     }
 
-    add_group_box(window, L"机器人实时状态", 16, 828, 1228, 168);
-    g_status_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                    WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-                                    34, 858, 1192, 122, window,
-                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_LIST)),
-                                    GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(g_status_list, WM_SETFONT, reinterpret_cast<WPARAM>(g_small_font), TRUE);
-    ListView_SetExtendedListViewStyle(g_status_list,
-                                      LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
-    add_column(g_status_list, 0, 110, L"机器人");
-    add_column(g_status_list, 1, 90, L"模式");
-    add_column(g_status_list, 2, 55, L"连接");
-    add_column(g_status_list, 3, 55, L"上电");
-    add_column(g_status_list, 4, 55, L"使能");
-    add_column(g_status_list, 5, 55, L"拖动");
-    add_column(g_status_list, 6, 55, L"伺服");
-    add_column(g_status_list, 7, 120, L"故障");
-    add_column(g_status_list, 8, 70, L"年龄ms");
-    add_column(g_status_list, 9, 65, L"序列");
-    add_column(g_status_list, 10, 65, L"登录码");
-    add_column(g_status_list, 11, 75, L"Servo错误");
-    add_column(g_status_list, 12, 70, L"速率Hz");
-    add_column(g_status_list, 13, 55, L"丢包");
-    add_column(g_status_list, 14, 75, L"Watchdog");
-    add_column(g_status_list, 15, 80, L"读/写错误");
+    add_group_box(window, L"使用顺序", 16, 834, 1228, 164);
+    add_control(window, L"STATIC",
+                L"单台控制：选择机器人 -> 勾选真实运动授权 -> 关节控制 / 轨迹录制 / 轨迹回放。\r\n"
+                L"组遥操作：选择遥操作组 -> 先 Dry-run -> 勾选真实运动授权 -> 启动选中组 -> 拖动操作臂。\r\n"
+                L"完整状态：点击右上角“实时状态”，分别查看运行状态和通信诊断。",
+                SS_LEFT, 34, 872, 1180, 106, 0, nullptr);
 
     HWND status_title = add_control(window, L"STATIC", L"机器人实时状态", SS_LEFT,
                                    24, 16, 520, 32, 0, nullptr);
@@ -465,7 +446,7 @@ void build_ui(HWND window) {
                                         540, 20, 550, 40, ID_STATUS_PAGE_SUMMARY, nullptr);
     SendMessageW(g_status_page_summary, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
     HWND back = add_control(window, L"BUTTON", L"返回控制台", WS_TABSTOP | BS_PUSHBUTTON,
-                            1110, 20, 140, 40, ID_STATUS_BACK, nullptr);
+                            1105, 20, 145, 40, ID_STATUS_BACK, nullptr);
     HWND primary_label = add_control(window, L"STATIC", L"运行状态", SS_LEFT,
                                     24, 74, 180, 24, 0, nullptr);
     SendMessageW(primary_label, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
@@ -487,7 +468,6 @@ void build_ui(HWND window) {
     add_column(g_status_page_primary, 7, 360, L"故障");
     add_column(g_status_page_primary, 8, 120, L"数据年龄ms");
     add_column(g_status_page_primary, 9, 120, L"序列号");
-
     HWND diag_label = add_control(window, L"STATIC", L"通信与诊断", SS_LEFT,
                                   24, 480, 180, 24, 0, nullptr);
     SendMessageW(diag_label, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
@@ -507,16 +487,14 @@ void build_ui(HWND window) {
     add_column(g_status_page_diag, 5, 120, L"Watchdog");
     add_column(g_status_page_diag, 6, 150, L"读取/发送错误");
     add_column(g_status_page_diag, 7, 390, L"停止/故障原因");
-
     for (HWND control : {status_title, primary_label, diag_label, g_status_page_summary,
-                                back, g_status_page_primary, g_status_page_diag}) {
+                         back, g_status_page_primary, g_status_page_diag}) {
         g_status_page_controls.push_back(control);
     }
     for (HWND control : g_status_page_controls) ShowWindow(control, SW_HIDE);
 
     fill_robot_list();
     fill_group_list();
-    refresh_status_list();
     set_status(g_registry_path.empty() ? L"未找到配置文件" : L"配置：" + g_registry_path.wstring());
 }
 
@@ -643,7 +621,6 @@ void show_main_page() {
         ShowWindow(control, is_status_page_control(control) ? SW_HIDE : SW_SHOW);
     }
     SetWindowTextW(g_window, L"JAKA 多机器人控制台");
-    refresh_status_list();
     update_session_ui();
 }
 
@@ -1551,7 +1528,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             const std::size_t before = g_sessions.size();
             prune_exited_sessions();
             if (g_status_page_open) refresh_status_page();
-            else refresh_status_list();
             update_session_ui();
             if (g_sessions.size() != before && g_sessions.empty() && g_session_status) {
                 SetWindowTextW(g_session_status, L"全部会话已退出");
