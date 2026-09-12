@@ -55,3 +55,6 @@ __pycache__/
 # Nested/local repositories and compiled test binaries
 /jaka_ros2/
 /jaka_dual_readonly/waypoint_recorder_core_test
+
+# Local robot configuration
+/config/robots.ini
