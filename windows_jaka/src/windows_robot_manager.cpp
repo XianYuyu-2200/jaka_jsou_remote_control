@@ -3,8 +3,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <objidl.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <gdiplus.h>
 
 #include "control_pipe.hpp"
 #include "robot_registry.hpp"
@@ -25,6 +27,7 @@
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 namespace {
 
@@ -40,6 +43,10 @@ constexpr COLORREF kSuccess = RGB(5, 150, 105);
 constexpr int kHeadingFontHeight = 24;
 constexpr int kBodyFontHeight = 18;
 constexpr int kSmallFontHeight = 16;
+constexpr int kLogoMargin = 24;
+constexpr int kLogoMaxWidth = 72;
+constexpr int kLogoMaxHeight = 64;
+constexpr int kLogoTop = 9;
 
 constexpr int ID_ROBOT_LIST = 1000;
 constexpr int ID_GROUP_LIST = 1001;
@@ -107,6 +114,7 @@ HFONT g_body_font{};
 HFONT g_small_font{};
 HBRUSH g_background_brush{};
 HBRUSH g_surface_brush{};
+Gdiplus::Image* g_logo_image{};
 std::filesystem::path g_status_directory;
 enum class SessionKind { Group, Single };
 struct ActiveSession {
@@ -261,6 +269,56 @@ LRESULT CALLBACK jog_button_subclass(HWND hwnd, UINT message, WPARAM wparam,
 void stop_selected_group();
 std::filesystem::path workdir_root();
 
+std::filesystem::path find_logo_path() {
+    wchar_t module_path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+    const auto executable_dir = std::filesystem::path(module_path).parent_path();
+    const std::array<std::filesystem::path, 2> candidates{
+        executable_dir / L"江苏开放大学.png",
+        workdir_root() / L"江苏开放大学.png"};
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (std::filesystem::exists(candidate, error) && !error) return candidate;
+    }
+    return {};
+}
+
+void load_logo_image() {
+    delete g_logo_image;
+    g_logo_image = nullptr;
+
+    const std::filesystem::path path = find_logo_path();
+    if (path.empty()) return;
+
+    Gdiplus::Image* image = Gdiplus::Image::FromFile(path.c_str(), FALSE);
+    if (!image || image->GetLastStatus() != Gdiplus::Ok) {
+        delete image;
+        return;
+    }
+    g_logo_image = image;
+}
+
+void draw_logo(HDC dc, int client_width) {
+    if (!dc || !g_logo_image || client_width <= 0) return;
+
+    const int source_width = static_cast<int>(g_logo_image->GetWidth());
+    const int source_height = static_cast<int>(g_logo_image->GetHeight());
+    if (source_width <= 0 || source_height <= 0) return;
+
+    const double scale = std::min(
+        static_cast<double>(kLogoMaxWidth) / source_width,
+        static_cast<double>(kLogoMaxHeight) / source_height);
+    const int logo_width = std::max(1, static_cast<int>(std::lround(source_width * scale)));
+    const int logo_height = std::max(1, static_cast<int>(std::lround(source_height * scale)));
+    const int logo_x = client_width - kLogoMargin - logo_width;
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    graphics.DrawImage(g_logo_image, logo_x, kLogoTop, logo_width, logo_height);
+    graphics.Flush(Gdiplus::FlushIntentionSync);
+}
+
 void add_edit(HWND parent, int id, int x, int y, int width,
               std::vector<HWND>* group = nullptr) {
     add_control(parent, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL,
@@ -279,17 +337,18 @@ void build_ui(HWND window) {
                                CLEARTYPE_QUALITY, FF_SWISS, L"Microsoft YaHei UI");
     g_background_brush = CreateSolidBrush(kBackground);
     g_surface_brush = CreateSolidBrush(kSurface);
+    load_logo_image();
 
     add_section_title(window, L"JAKA 多机器人控制台", 24, 16, 520);
     add_control(window, L"STATIC", L"设备管理  /  单臂控制  /  一拖多遥操作  /  实时诊断",
-                SS_LEFT, 26, 52, 620, 26, 0, nullptr);
+                SS_LEFT, 26, 52, 520, 26, 0, nullptr);
     g_status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
-                               620, 20, 470, 40, window,
+                               560, 20, 450, 40, window,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS)),
                                GetModuleHandleW(nullptr), nullptr);
     SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
     add_control(window, L"BUTTON", L"实时状态", WS_TABSTOP | BS_PUSHBUTTON,
-                1105, 20, 145, 40, ID_OPEN_STATUS_PAGE, nullptr);
+                1018, 20, 135, 40, ID_OPEN_STATUS_PAGE, nullptr);
 
     add_group_box(window, L"机器人设备与参数", 16, 84, 1228, 462);
     add_label(window, L"机器人列表", 34, 106, 260);
@@ -440,13 +499,13 @@ void build_ui(HWND window) {
                 SS_LEFT, 34, 872, 1180, 106, 0, nullptr);
 
     HWND status_title = add_control(window, L"STATIC", L"机器人实时状态", SS_LEFT,
-                                   24, 16, 520, 32, 0, nullptr);
+                                   24, 16, 440, 32, 0, nullptr);
     SendMessageW(status_title, WM_SETFONT, reinterpret_cast<WPARAM>(g_heading_font), TRUE);
     g_status_page_summary = add_control(window, L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE,
-                                        540, 20, 550, 40, ID_STATUS_PAGE_SUMMARY, nullptr);
+                                        500, 20, 500, 40, ID_STATUS_PAGE_SUMMARY, nullptr);
     SendMessageW(g_status_page_summary, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
     HWND back = add_control(window, L"BUTTON", L"返回控制台", WS_TABSTOP | BS_PUSHBUTTON,
-                            1105, 20, 145, 40, ID_STATUS_BACK, nullptr);
+                            1018, 20, 135, 40, ID_STATUS_BACK, nullptr);
     HWND primary_label = add_control(window, L"STATIC", L"运行状态", SS_LEFT,
                                     24, 74, 180, 24, 0, nullptr);
     SendMessageW(primary_label, WM_SETFONT, reinterpret_cast<WPARAM>(g_body_font), TRUE);
@@ -1542,6 +1601,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         LineTo(dc, client.right, 82);
         SelectObject(dc, old_pen);
         DeleteObject(pen);
+        draw_logo(dc, client.right);
         EndPaint(window, &paint);
         return 0;
     }
@@ -1579,6 +1639,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         DeleteObject(g_small_font);
         DeleteObject(g_background_brush);
         DeleteObject(g_surface_brush);
+        delete g_logo_image;
+        g_logo_image = nullptr;
         PostQuitMessage(0);
         return 0;
     default:
@@ -1614,6 +1676,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
 
+    Gdiplus::GdiplusStartupInput gdiplus_input;
+    ULONG_PTR gdiplus_token = 0;
+    if (Gdiplus::GdiplusStartup(&gdiplus_token, &gdiplus_input, nullptr) != Gdiplus::Ok) return 3;
+
     g_registry_path = registry_path();
     g_status_directory = workdir_root() / L"status";
     std::filesystem::create_directories(g_status_directory);
@@ -1636,13 +1702,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     window_class.lpszClassName = L"JakaRobotManagerWindow";
-    if (!RegisterClassExW(&window_class)) return 1;
+    if (!RegisterClassExW(&window_class)) {
+        Gdiplus::GdiplusShutdown(gdiplus_token);
+        return 1;
+    }
 
     HWND window = CreateWindowExW(0, window_class.lpszClassName, L"JAKA 多机器人控制台",
                                   WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                   CW_USEDEFAULT, CW_USEDEFAULT, 1320, 1120,
                                   nullptr, nullptr, instance, nullptr);
-    if (!window) return 2;
+    if (!window) {
+        Gdiplus::GdiplusShutdown(gdiplus_token);
+        return 2;
+    }
     ShowWindow(window, show_command);
     UpdateWindow(window);
 
@@ -1651,5 +1723,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    Gdiplus::GdiplusShutdown(gdiplus_token);
     return static_cast<int>(message.wParam);
 }

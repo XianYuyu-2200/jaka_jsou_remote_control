@@ -95,7 +95,15 @@ endif()
 
 add_executable(windows_robot_manager WIN32 src/windows_robot_manager.cpp)
 target_include_directories(windows_robot_manager PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
-target_link_libraries(windows_robot_manager PRIVATE comctl32 user32)
+target_link_libraries(windows_robot_manager PRIVATE comctl32 user32 gdiplus)
+
+set(JAKA_ROBOT_MANAGER_LOGO "${CMAKE_CURRENT_SOURCE_DIR}/../江苏开放大学.png")
+if(EXISTS "${JAKA_ROBOT_MANAGER_LOGO}")
+    add_custom_command(TARGET windows_robot_manager POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${JAKA_ROBOT_MANAGER_LOGO}"
+            "$<TARGET_FILE_DIR:windows_robot_manager>/江苏开放大学.png")
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
