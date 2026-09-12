@@ -634,6 +634,24 @@ void show_status_page() {
     refresh_status_page();
 }
 
+bool robot_has_active_session(const std::string& robot_id) {
+    for (const auto& session : g_sessions) {
+        if (std::find(session->robot_ids.begin(), session->robot_ids.end(), robot_id) !=
+            session->robot_ids.end()) return true;
+    }
+    return false;
+}
+
+bool status_file_is_fresh(const std::filesystem::path& path,
+                          std::chrono::milliseconds max_age = std::chrono::milliseconds(3000)) {
+    std::error_code error;
+    const auto modified = std::filesystem::last_write_time(path, error);
+    if (error) return false;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    if (now < modified) return true;
+    return now - modified <= max_age;
+}
+
 void refresh_status_page() {
     if (!g_status_page_primary || !g_status_page_diag) return;
     clear_list(g_status_page_primary);
@@ -643,14 +661,17 @@ void refresh_status_page() {
         const auto& robot = g_registry.robots[i];
         const auto path = g_status_directory / (widen(robot.id) + L".status");
         const auto values = read_status_file(path);
+        const bool active = robot_has_active_session(robot.id);
+        const bool fresh = status_file_is_fresh(path);
+        const bool live = active && fresh && !values.empty();
         auto value = [&](const std::string& key, const std::wstring& fallback = L"-") -> std::wstring {
             const auto found = values.find(key);
             return found == values.end() || found->second.empty() ? fallback : widen(found->second);
         };
-        std::wstring mode = values.empty() ? L"未运行" : value("mode", L"-");
-        std::wstring alarm = value("alarm", L"");
-        if (alarm.empty()) alarm = values.empty() ? L"未运行" : L"无";
-        if (!values.empty() && alarm != L"无") ++fault_count;
+        std::wstring mode = live ? value("mode", L"-") : (active ? L"启动中/状态等待中" : L"未运行");
+        std::wstring alarm = live ? value("alarm", L"") : (active ? L"等待状态文件" : L"未运行");
+        if (alarm.empty()) alarm = live ? L"无" : alarm;
+        if (live && alarm != L"无") ++fault_count;
 
         std::wstring id = widen(robot.id);
         LVITEMW item{};
@@ -658,13 +679,14 @@ void refresh_status_page() {
         item.iItem = static_cast<int>(i);
         item.pszText = id.data();
         const int row = ListView_InsertItem(g_status_page_primary, &item);
-        std::wstring connected = values.empty() ? L"-" : status_yes_no(values, "connected");
-        std::wstring powered = values.empty() ? L"-" : status_yes_no(values, "powered");
-        std::wstring enabled = values.empty() ? L"-" : status_yes_no(values, "enabled");
-        std::wstring dragging = values.empty() ? L"-" : status_yes_no(values, "dragging");
-        std::wstring servo = values.empty() ? L"-" : status_yes_no(values, "servo");
-        std::wstring age = value("packet_age_ms", L"-");
-        std::wstring sequence = value("sequence", L"-");
+        const std::wstring unavailable = active ? L"等待" : L"未检测";
+        std::wstring connected = live ? status_yes_no(values, "connected") : unavailable;
+        std::wstring powered = live ? status_yes_no(values, "powered") : unavailable;
+        std::wstring enabled = live ? status_yes_no(values, "enabled") : unavailable;
+        std::wstring dragging = live ? status_yes_no(values, "dragging") : unavailable;
+        std::wstring servo = live ? status_yes_no(values, "servo") : unavailable;
+        std::wstring age = live ? value("packet_age_ms", L"-") : L"-";
+        std::wstring sequence = live ? value("sequence", L"-") : L"-";
         ListView_SetItemText(g_status_page_primary, row, 1, mode.data());
         ListView_SetItemText(g_status_page_primary, row, 2, connected.data());
         ListView_SetItemText(g_status_page_primary, row, 3, powered.data());
@@ -676,14 +698,14 @@ void refresh_status_page() {
         ListView_SetItemText(g_status_page_primary, row, 9, sequence.data());
 
         const int diag_row = ListView_InsertItem(g_status_page_diag, &item);
-        std::wstring login_code = value("login_code", L"-");
-        std::wstring servo_error = value("servo_error", L"-");
-        std::wstring rate = value("rate_hz", L"-");
-        std::wstring dropped = value("dropped_packets", L"-");
-        std::wstring watchdog = value("watchdog_ticks", L"-");
-        const std::wstring read_errors = values.empty() ? L"-" : value("read_errors", L"0");
-        const std::wstring send_errors = values.empty() ? L"-" : value("send_errors", L"0");
-        std::wstring errors = values.empty() ? L"-" : read_errors + L" / " + send_errors;
+        std::wstring login_code = live ? value("login_code", L"-") : L"-";
+        std::wstring servo_error = live ? value("servo_error", L"-") : L"-";
+        std::wstring rate = live ? value("rate_hz", L"-") : L"-";
+        std::wstring dropped = live ? value("dropped_packets", L"-") : L"-";
+        std::wstring watchdog = live ? value("watchdog_ticks", L"-") : L"-";
+        const std::wstring read_errors = live ? value("read_errors", L"0") : L"-";
+        const std::wstring send_errors = live ? value("send_errors", L"0") : L"-";
+        std::wstring errors = live ? read_errors + L" / " + send_errors : L"-";
         ListView_SetItemText(g_status_page_diag, diag_row, 1, login_code.data());
         ListView_SetItemText(g_status_page_diag, diag_row, 2, servo_error.data());
         ListView_SetItemText(g_status_page_diag, diag_row, 3, rate.data());

@@ -94,7 +94,20 @@ foreach ($dir in $candidateDirs) {
 }
 if ($null -eq $selected) { throw "Windows operator/follower executables were not found." }
 
+function ConvertTo-ProcessArguments([object[]]$Arguments) {
+    $quoted = New-Object System.Collections.Generic.List[string]
+    foreach ($argument in $Arguments) {
+        $text = [string]$argument
+        if ($text -match '[\s"]') {
+            $text = '"' + ($text -replace '"', '\"') + '"'
+        }
+        $quoted.Add($text)
+    }
+    return ($quoted.ToArray() -join ' ')
+}
+
 $processes = @()
+$processRecords = @()
 try {
     $peerPorts = @()
     for ($i = 0; $i -lt $followerIds.Count; ++$i) {
@@ -119,7 +132,8 @@ try {
         if ($DurationSec -gt 0) { $followerArgs += @("--duration-sec", "$DurationSec") }
         if ($ArmMotion) { $followerArgs += "--arm-motion" } else { $followerArgs += "--dry-run" }
         Write-Host "Starting follower $id ip=$($section['ip']) udp=$port pipe=$pipe"
-        $process = Start-Process -FilePath $selected.Follower -ArgumentList $followerArgs -PassThru -NoNewWindow
+        $followerProcessArgs = ConvertTo-ProcessArguments $followerArgs
+        $process = Start-Process -FilePath $selected.Follower -ArgumentList $followerProcessArgs -PassThru -NoNewWindow
         $processes += $process
         $processRecords += [pscustomobject]@{ Label = "follower:$id"; Process = $process }
     }
@@ -147,7 +161,8 @@ try {
     if ($ArmMotion) { $operatorArgs += "--arm-motion" } else { $operatorArgs += "--dry-run" }
 
     Write-Host "Starting operator $operatorId ip=$($operatorSection['ip']) followers=$($followerIds -join ',')"
-    $operator = Start-Process -FilePath $selected.Operator -ArgumentList $operatorArgs -PassThru -NoNewWindow
+    $operatorProcessArgs = ConvertTo-ProcessArguments $operatorArgs
+    $operator = Start-Process -FilePath $selected.Operator -ArgumentList $operatorProcessArgs -PassThru -NoNewWindow
     $processes += $operator
     $processRecords += [pscustomobject]@{ Label = "operator:$operatorId"; Process = $operator }
 
