@@ -1065,6 +1065,46 @@ void stop_all_sessions() {
     set_status(L"全部会话已停止");
 }
 
+bool apply_selected_robot(bool show_error) {
+    const int index = selected_index(g_robot_list);
+    if (index < 0 || index >= static_cast<int>(g_registry.robots.size())) return false;
+    windows_jaka::RobotProfile robot;
+    std::string error;
+    if (!read_robot_form(robot, error)) {
+        set_status(L"机器人参数无效：" + widen(error));
+        if (show_error) {
+            MessageBoxW(g_window, widen(error).c_str(), L"机器人参数无效",
+                        MB_ICONWARNING | MB_OK);
+        }
+        return false;
+    }
+    g_registry.robots[static_cast<std::size_t>(index)] = robot;
+    fill_robot_list();
+    select_list_item(g_robot_list, index);
+    set_status(L"机器人已应用：" + widen(robot.id) + L"  IP=" + widen(robot.ip));
+    return true;
+}
+
+bool apply_selected_group(bool show_error) {
+    const int index = selected_index(g_group_list);
+    if (index < 0 || index >= static_cast<int>(g_registry.groups.size())) return false;
+    windows_jaka::TeleopGroup group;
+    std::string error;
+    if (!read_group_form(group, error)) {
+        set_status(L"组参数无效：" + widen(error));
+        if (show_error) {
+            MessageBoxW(g_window, widen(error).c_str(), L"组参数无效",
+                        MB_ICONWARNING | MB_OK);
+        }
+        return false;
+    }
+    g_registry.groups[static_cast<std::size_t>(index)] = group;
+    fill_group_list();
+    select_list_item(g_group_list, index);
+    set_status(L"遥操作组已应用：" + widen(group.id));
+    return true;
+}
+
 void handle_command(int id) {
     switch (id) {
     case ID_ROBOT_ADD: {
@@ -1079,19 +1119,9 @@ void handle_command(int id) {
         load_robot_form(static_cast<int>(g_registry.robots.size() - 1));
         break;
     }
-    case ID_ROBOT_APPLY: {
-        const int index = selected_index(g_robot_list);
-        windows_jaka::RobotProfile robot;
-        std::string error;
-        if (index < 0 || !read_robot_form(robot, error)) {
-            set_status(L"机器人参数无效：" + widen(error));
-            break;
-        }
-        g_registry.robots[static_cast<std::size_t>(index)] = robot;
-        fill_robot_list();
-        select_list_item(g_robot_list, index);
+    case ID_ROBOT_APPLY:
+        apply_selected_robot(true);
         break;
-    }
     case ID_ROBOT_DELETE: {
         const int index = selected_index(g_robot_list);
         if (index < 0) break;
@@ -1118,19 +1148,9 @@ void handle_command(int id) {
         load_group_form(static_cast<int>(g_registry.groups.size() - 1));
         break;
     }
-    case ID_GROUP_APPLY: {
-        const int index = selected_index(g_group_list);
-        windows_jaka::TeleopGroup group;
-        std::string error;
-        if (index < 0 || !read_group_form(group, error)) {
-            set_status(L"组参数无效：" + widen(error));
-            break;
-        }
-        g_registry.groups[static_cast<std::size_t>(index)] = group;
-        fill_group_list();
-        select_list_item(g_group_list, index);
+    case ID_GROUP_APPLY:
+        apply_selected_group(true);
         break;
-    }
     case ID_GROUP_DELETE: {
         const int index = selected_index(g_group_list);
         if (index < 0) break;
@@ -1138,9 +1158,13 @@ void handle_command(int id) {
         fill_group_list();
         break;
     }
-    case ID_SAVE:
-        save_registry();
+    case ID_SAVE: {
+        bool ok = true;
+        if (selected_index(g_robot_list) >= 0) ok = apply_selected_robot(true) && ok;
+        if (selected_index(g_group_list) >= 0) ok = apply_selected_group(true) && ok;
+        if (ok) save_registry();
         break;
+    }
     case ID_SINGLE_JOINT:
         start_single_session("joint");
         break;
