@@ -41,22 +41,30 @@ WinsockRuntime::~WinsockRuntime() { WSACleanup(); }
 UdpSocket::~UdpSocket() { close(); }
 
 void UdpSocket::open_sender(const char* address, std::uint16_t port) {
+    open_sender_multi({UdpEndpoint{address == nullptr ? "" : address, port}});
+}
+
+void UdpSocket::open_sender_multi(const std::vector<UdpEndpoint>& endpoints) {
     close();
+    if (endpoints.empty()) throw std::invalid_argument("UDP sender requires at least one destination");
+
     SOCKET socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket == INVALID_SOCKET) throw_wsa("socket");
     socket_ = static_cast<std::uintptr_t>(socket);
     opened_ = true;
 
-    sockaddr_in destination{};
-    destination.sin_family = AF_INET;
-    destination.sin_port = htons(port);
-    if (InetPtonA(AF_INET, address, &destination.sin_addr) != 1) {
-        close();
-        throw std::runtime_error(std::string("invalid IPv4 address: ") + address);
-    }
-    if (connect(socket, reinterpret_cast<const sockaddr*>(&destination), sizeof(destination)) == SOCKET_ERROR) {
-        close();
-        throw_wsa("connect UDP sender");
+    destinations_.clear();
+    destinations_.reserve(endpoints.size());
+    for (const auto& endpoint : endpoints) {
+        sockaddr_in destination{};
+        destination.sin_family = AF_INET;
+        destination.sin_port = htons(endpoint.port);
+        if (InetPtonA(AF_INET, endpoint.address.c_str(), &destination.sin_addr) != 1) {
+            const std::string address = endpoint.address;
+            close();
+            throw std::runtime_error("invalid IPv4 address: " + address);
+        }
+        destinations_.push_back(Destination{destination.sin_addr.s_addr, endpoint.port});
     }
 }
 
@@ -86,9 +94,20 @@ void UdpSocket::set_nonblocking(bool enabled) {
 
 bool UdpSocket::send_packet(const JointSamplePacket& packet) {
     if (!opened_) throw std::logic_error("UDP socket is not open");
-    const int bytes = send(as_socket(socket_), reinterpret_cast<const char*>(&packet),
-                           static_cast<int>(sizeof(packet)), 0);
-    return bytes == static_cast<int>(sizeof(packet));
+    if (destinations_.empty()) throw std::logic_error("UDP sender has no destination");
+    bool all_sent = true;
+    for (const auto& destination : destinations_) {
+        sockaddr_in target{};
+        target.sin_family = AF_INET;
+        target.sin_port = htons(destination.port);
+        target.sin_addr.s_addr = destination.address;
+        const int bytes = sendto(as_socket(socket_), reinterpret_cast<const char*>(&packet),
+                                 static_cast<int>(sizeof(packet)), 0,
+                                 reinterpret_cast<const sockaddr*>(&target),
+                                 sizeof(target));
+        if (bytes != static_cast<int>(sizeof(packet))) all_sent = false;
+    }
+    return all_sent;
 }
 
 bool UdpSocket::receive_packet(JointSamplePacket& packet, int timeout_ms) {
@@ -125,6 +144,7 @@ void UdpSocket::close() {
         closesocket(as_socket(socket_));
         opened_ = false;
         socket_ = static_cast<std::uintptr_t>(~0ULL);
+        destinations_.clear();
     }
 }
 

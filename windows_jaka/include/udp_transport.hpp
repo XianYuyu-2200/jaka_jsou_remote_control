@@ -3,6 +3,8 @@
 #include "joint_sample_packet.hpp"
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace windows_jaka {
 
@@ -14,6 +16,11 @@ public:
     WinsockRuntime& operator=(const WinsockRuntime&) = delete;
 };
 
+struct UdpEndpoint {
+    std::string address;
+    std::uint16_t port;
+};
+
 class UdpSocket {
 public:
     enum class ReceiveStatus { Timeout, Received, InvalidDatagram };
@@ -23,6 +30,7 @@ public:
     UdpSocket& operator=(const UdpSocket&) = delete;
 
     void open_sender(const char* address, std::uint16_t port);
+    void open_sender_multi(const std::vector<UdpEndpoint>& endpoints);
     void open_receiver(std::uint16_t port);
     void set_nonblocking(bool enabled);
     bool send_packet(const JointSamplePacket& packet);
@@ -33,6 +41,11 @@ public:
 private:
     std::uintptr_t socket_{static_cast<std::uintptr_t>(~0ULL)};
     bool opened_{false};
+    struct Destination {
+        std::uint32_t address;
+        std::uint16_t port;
+    };
+    std::vector<Destination> destinations_;
 };
 
 }  // namespace windows_jaka

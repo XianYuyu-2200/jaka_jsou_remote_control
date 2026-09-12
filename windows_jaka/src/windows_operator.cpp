@@ -41,6 +41,7 @@ BOOL WINAPI console_handler(DWORD type) {
 struct Options {
     std::string operator_ip{"192.168.0.101"};
     std::uint16_t port{30001};
+    std::vector<std::uint16_t> peer_ports;
     double duration_sec{0.0};
     std::string record_file;
     std::string playback_file;
@@ -70,6 +71,7 @@ Options parse_options(int argc, char** argv) {
         };
         if (arg == "--operator-ip") options.operator_ip = next("--operator-ip");
         else if (arg == "--port") options.port = parse_port(next("--port"));
+        else if (arg == "--peer-port") options.peer_ports.push_back(parse_port(next("--peer-port")));
         else if (arg == "--duration-sec") options.duration_sec = std::stod(next("--duration-sec"));
         else if (arg == "--record-file") options.record_file = next("--record-file");
         else if (arg == "--playback-file") options.playback_file = next("--playback-file");
@@ -87,6 +89,7 @@ Options parse_options(int argc, char** argv) {
         else if (arg == "--max-acceleration") options.max_acceleration = std::stod(next("--max-acceleration"));
         else if (arg == "--help" || arg == "-h") {
             std::cout << "windows_operator.exe [--operator-ip IP] [--port N] [--duration-sec S]"
+                         " [--peer-port N ...]"
                          " [--record-file PATH] [--playback-file PATH] [--playback-speed 1.0]"
                          " [--dry-run|--arm-motion]"
                          " [--control-pipe \\\\.\\pipe\\jaka_operator_teleop]"
@@ -168,7 +171,21 @@ int main(int argc, char** argv) {
 
         windows_jaka::WinsockRuntime winsock;
         windows_jaka::UdpSocket udp;
-        udp.open_sender("127.0.0.1", options.port);
+        std::vector<windows_jaka::UdpEndpoint> destinations;
+        if (options.peer_ports.empty()) {
+            destinations.push_back({"127.0.0.1", options.port});
+        } else {
+            for (std::uint16_t peer_port : options.peer_ports) {
+                destinations.push_back({"127.0.0.1", peer_port});
+            }
+        }
+        udp.open_sender_multi(destinations);
+        std::cout << "operator_udp_destinations=";
+        for (std::size_t i = 0; i < destinations.size(); ++i) {
+            if (i != 0) std::cout << ',';
+            std::cout << destinations[i].port;
+        }
+        std::cout << "\n";
 
         const int login_ret = robot.login_in(options.operator_ip.c_str(), false);
         logged_in = login_ret == 0;

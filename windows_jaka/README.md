@@ -159,6 +159,32 @@ GUI 的“轨迹录制”和“轨迹回放”用于同一条机械臂的示教�
 回放前仍需勾选真实运动授权，且 GUI 会再次弹出确认窗口。程序不会自动使能机器人，也不会替代硬件急停。
 
 注意：轨迹回放是相对运动复现，不是恢复到录制时的绝对安全姿态。若要求绝对位姿复现，应另行增加绝对轨迹校验和起点对准流程。
+## 一台操作臂驱动多台跟随臂
+
+`run_windows_multi_teleop.ps1` 提供 1:N 遥操作运行链路：
+
+- 一个 `windows_operator.exe` 进程读取操作臂；
+- 同一个 80 字节关节数据包同时发送到 N 个本地 UDP 端口；
+- 每台 `windows_follower.exe` 使用独立端口和独立命名管道；
+- 未列出的机械臂不会启动运动控制。
+
+示例：
+
+    $env:JAKA_ENABLE_MOTION = "1"
+    .\windows_jaka\run_windows_multi_teleop.ps1 `
+      -OperatorIp 192.168.1.101 `
+      -FollowerIps 192.168.1.102,192.168.1.103 `
+      -BasePort 30001 `
+      -ArmMotion
+
+Dry-run 示例：
+
+    .\windows_jaka\run_windows_multi_teleop.ps1 `
+      -OperatorIp 192.168.1.101 `
+      -FollowerIps 192.168.1.102,192.168.1.103 `
+      -DryRun
+
+该脚本已经具备 1:N 数据分发能力；机器人 GUI 管理、分组选择和进程状态汇总仍在继续开发。
 ## 命令行控制模式（不使用 GUI）
 
 `run_windows_teleop.ps1` 新增：
