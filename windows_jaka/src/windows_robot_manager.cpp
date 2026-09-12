@@ -11,6 +11,7 @@
 #include "runtime_plan.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -64,6 +65,8 @@ constexpr int ID_SINGLE_JOINT = 1400;
 constexpr int ID_SINGLE_RECORD = 1401;
 constexpr int ID_SINGLE_PLAYBACK = 1402;
 constexpr int ID_SINGLE_STOP = 1403;
+constexpr int ID_SAFE_EXECUTE = 1404;
+constexpr int ID_JOG_BASE = 1500;
 constexpr UINT_PTR ID_SESSION_TIMER = 1;
 
 HWND g_window{};
@@ -79,6 +82,9 @@ enum class SessionKind { None, Group, Single };
 SessionKind g_session_kind{SessionKind::None};
 std::string g_single_robot_id;
 std::wstring g_single_control_pipe;
+std::string g_single_mode;
+int g_jog_axis{-1};
+double g_jog_delta{0.0};
 windows_jaka::RobotRegistry g_registry;
 std::filesystem::path g_registry_path;
 std::vector<HWND> g_robot_controls;
@@ -183,6 +189,9 @@ void stop_selected_group();
 void update_session_ui();
 void refresh_status_list();
 void start_single_session(const std::string& control_mode);
+bool send_single_pipe_line(const std::string& line);
+LRESULT CALLBACK jog_button_subclass(HWND hwnd, UINT message, WPARAM wparam,
+                                     LPARAM lparam, UINT_PTR, DWORD_PTR data);
 void stop_selected_group();
 std::filesystem::path workdir_root();
 
@@ -268,6 +277,28 @@ void build_ui(HWND window) {
                 760, 444, 100, 34, ID_SINGLE_PLAYBACK, &g_robot_controls);
     add_control(window, L"BUTTON", L"停止单台", WS_TABSTOP | BS_PUSHBUTTON,
                 870, 444, 100, 34, ID_SINGLE_STOP, &g_robot_controls);
+    add_control(window, L"BUTTON", L"执行安全姿态", WS_TABSTOP | BS_PUSHBUTTON,
+                390, 486, 100, 30, ID_SAFE_EXECUTE, &g_robot_controls);
+    for (int axis = 0; axis < 6; ++axis) {
+        const int x = 500 + axis * 105;
+        std::wstring joint = L"J" + std::to_wstring(axis + 1);
+        add_control(window, L"STATIC", joint.c_str(), SS_LEFT,
+                    x, 490, 24, 24, 0, &g_robot_controls);
+        HWND minus = CreateWindowExW(0, L"BUTTON", L"-", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                     x + 25, 486, 30, 30, window,
+                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_JOG_BASE + axis * 2)),
+                                     GetModuleHandleW(nullptr), nullptr);
+        HWND plus = CreateWindowExW(0, L"BUTTON", L"+", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                    x + 58, 486, 30, 30, window,
+                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_JOG_BASE + axis * 2 + 1)),
+                                    GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(minus, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        SendMessageW(plus, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        SetWindowSubclass(minus, jog_button_subclass, static_cast<UINT_PTR>(axis * 2), static_cast<DWORD_PTR>(axis * 2));
+        SetWindowSubclass(plus, jog_button_subclass, static_cast<UINT_PTR>(axis * 2 + 1), static_cast<DWORD_PTR>(axis * 2 + 1));
+        g_robot_controls.push_back(minus);
+        g_robot_controls.push_back(plus);
+    }
 
     add_label(window, L"遥操作组", 20, 520, 300);
     g_group_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
@@ -591,6 +622,13 @@ void update_session_ui() {
     EnableWindow(GetDlgItem(g_window, ID_SINGLE_RECORD), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_window, ID_SINGLE_PLAYBACK), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_window, ID_SINGLE_STOP), running ? TRUE : FALSE);
+    const bool single_joint = running && g_session_kind == SessionKind::Single &&
+        (g_single_mode == "joint" || g_single_mode == "record");
+    for (int axis = 0; axis < 6; ++axis) {
+        EnableWindow(GetDlgItem(g_window, ID_JOG_BASE + axis * 2), single_joint ? TRUE : FALSE);
+        EnableWindow(GetDlgItem(g_window, ID_JOG_BASE + axis * 2 + 1), single_joint ? TRUE : FALSE);
+    }
+    EnableWindow(GetDlgItem(g_window, ID_SAFE_EXECUTE), single_joint ? TRUE : FALSE);
     if (g_session_status && !running) {
         SetWindowTextW(g_session_status, L"会话未启动");
     }
@@ -686,6 +724,73 @@ void start_selected_group() {
     update_session_ui();
 }
 
+bool send_single_pipe_line(const std::string& line) {
+    if (g_session_kind != SessionKind::Single || !session_running() || g_single_control_pipe.empty()) {
+        set_status(L"当前没有运行中的单台会话");
+        return false;
+    }
+    if (!windows_jaka::send_control_command(g_single_control_pipe, line)) {
+        set_status(L"单台控制管道连接失败");
+        return false;
+    }
+    return true;
+}
+
+void execute_single_safe_pose() {
+    const int index = selected_index(g_robot_list);
+    if (index < 0 || index >= static_cast<int>(g_registry.robots.size())) {
+        set_status(L"请先选择机器人");
+        return;
+    }
+    windows_jaka::JointArray pose{};
+    if (!parse_numbers(read_text(GetDlgItem(g_window, ID_ROBOT_SAFE)), pose,
+                       windows_jaka::kDegreesToRadians)) {
+        set_status(L"安全姿态必须是 6 个逗号分隔角度值");
+        return;
+    }
+    const auto& robot = g_registry.robots[static_cast<std::size_t>(index)];
+    for (int i = 0; i < 6; ++i) {
+        if (pose[static_cast<std::size_t>(i)] < robot.lower_rad[static_cast<std::size_t>(i)] ||
+            pose[static_cast<std::size_t>(i)] > robot.upper_rad[static_cast<std::size_t>(i)]) {
+            set_status(L"安全姿态超出该机器人关节限位");
+            return;
+        }
+    }
+    std::ostringstream command;
+    command << "SAFEPOSE";
+    for (double value : pose) command << ' ' << value;
+    if (send_single_pipe_line(command.str())) set_status(L"安全姿态命令已发送");
+}
+
+LRESULT CALLBACK jog_button_subclass(HWND hwnd, UINT message, WPARAM wparam,
+                                     LPARAM lparam, UINT_PTR, DWORD_PTR data) {
+    const int axis = static_cast<int>(data) / 2;
+    const bool positive = (static_cast<int>(data) % 2) != 0;
+    const double delta = (axis < 3 ? 0.002 : 0.0015) * (positive ? 1.0 : -1.0);
+    if (message == WM_LBUTTONDOWN) {
+        if (g_session_kind != SessionKind::Single ||
+            !(g_single_mode == "joint" || g_single_mode == "record")) {
+            set_status(L"请先启动单臂关节控制或轨迹录制");
+            return 0;
+        }
+        g_jog_axis = axis;
+        g_jog_delta = delta;
+        SetCapture(hwnd);
+        send_single_pipe_line("JOG " + std::to_string(axis) + " " + std::to_string(delta));
+        return 0;
+    }
+    if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED) {
+        if (g_jog_axis == axis) {
+            send_single_pipe_line("JOG_STOP " + std::to_string(axis));
+            g_jog_axis = -1;
+            g_jog_delta = 0.0;
+        }
+        if (GetCapture() == hwnd) ReleaseCapture();
+        return 0;
+    }
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
 void start_single_session(const std::string& control_mode) {
     if (session_running()) {
         set_status(L"当前已有会话在运行");
@@ -770,7 +875,8 @@ void start_single_session(const std::string& control_mode) {
     CloseHandle(process.hThread);
     g_session_process = process.hProcess;
     g_session_kind = SessionKind::Single;
-    g_session_job = CreateJobObjectW(nullptr, nullptr);
+    g_single_mode = control_mode;
+    std::error_code mode_error;
     if (g_session_job) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -912,6 +1018,9 @@ void handle_command(int id) {
     case ID_SINGLE_STOP:
         stop_selected_group();
         break;
+    case ID_SAFE_EXECUTE:
+        execute_single_safe_pose();
+        break;
     case ID_GROUP_START:
         start_selected_group();
         break;
@@ -953,6 +1062,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 g_session_kind = SessionKind::None;
                 g_single_robot_id.clear();
                 g_single_control_pipe.clear();
+                g_single_mode.clear();
                 if (g_session_status) SetWindowTextW(g_session_status, L"会话进程已退出");
                 update_session_ui();
             }
