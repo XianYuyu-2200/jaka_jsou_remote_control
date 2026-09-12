@@ -1,0 +1,57 @@
+# Build and test outputs
+/build/
+/Testing/
+/output/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/*.vcxproj*
+**/*.sln
+**/Makefile
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+# Bundled installers/tools and local SDKs
+/windows_jaka/tools/
+/tmp/
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Vendor/runtime binaries and libraries
+*.dll
+*.lib
+*.exe
+
+# Unrelated local projects
+/PhotoLineartPlotter_portable_*/
+/PhotoLineartPlotter_source_*/
+
+# Runtime logs, captures and generated trajectories
+/logs/
+**/logs/
+*.log
+*.out
+*.err
+trajectory_*.csv
+
+# Python/cache metadata
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local editor/system state
+.superpowers/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Nested/local repositories and compiled test binaries
+/jaka_ros2/
+/jaka_dual_readonly/waypoint_recorder_core_test

@@ -1,0 +1,83 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "配置 CMake (Visual Studio 2022 x64)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S",
+        "${workspaceFolder}/windows_jaka",
+        "-B",
+        "${workspaceFolder}/build/windows_jaka-vs",
+        "-G",
+        "Visual Studio 17 2022",
+        "-A",
+        "x64",
+        "-DJAKA_SDK_ROOT=${env:JAKA_SDK_ROOT}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "编译 Windows Teleop GUI (Release)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "${workspaceFolder}/build/windows_jaka-vs",
+        "--target",
+        "windows_teleop_gui",
+        "--config",
+        "Release"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": [
+        "配置 CMake (Visual Studio 2022 x64)"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": [
+        "$msCompile"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "启动 Dry-run GUI (安全)",
+      "type": "shell",
+      "command": "${workspaceFolder}/build/windows_jaka-vs/Release/windows_teleop_gui.exe",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent"
+      }
+    },
+    {
+      "label": "编译并启动真实运动 GUI (危险)",
+      "type": "shell",
+      "command": "${workspaceFolder}/build/windows_jaka-vs/Release/windows_teleop_gui.exe",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "JAKA_ENABLE_MOTION": "1"
+        }
+      },
+      "dependsOn": [
+        "编译 Windows Teleop GUI (Release)"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent"
+      }
+    }
+  ]
+}

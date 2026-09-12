@@ -1,0 +1,10 @@
+{
+  "cmake.cmakePath": "cmake",
+  "cmake.sourceDirectory": "${workspaceFolder}/windows_jaka",
+  "cmake.buildDirectory": "${workspaceFolder}/build/windows_jaka-vs",
+  "cmake.generator": "Visual Studio 17 2022",
+  "cmake.configureArgs": [
+    "-DJAKA_SDK_ROOT=${env:JAKA_SDK_ROOT}"
+  ],
+  "cmake.configureOnOpen": false
+}

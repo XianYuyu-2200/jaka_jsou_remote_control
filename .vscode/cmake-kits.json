@@ -1,0 +1,9 @@
+[
+  {
+    "name": "Visual Studio 2022 - amd64",
+    "preferredGenerator": {
+      "name": "Visual Studio 17 2022",
+      "platform": "x64"
+    }
+  }
+]
