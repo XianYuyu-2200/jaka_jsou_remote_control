@@ -23,8 +23,14 @@ struct RuntimeStatus {
     bool servo{false};
     std::uint64_t sequence{0};
     std::uint64_t watchdog_ticks{0};
+    std::uint64_t dropped_packets{0};
+    std::uint64_t read_errors{0};
+    std::uint64_t send_errors{0};
+    int login_code{-1};
+    int servo_error{0};
     double rate_hz{0.0};
     double packet_age_ms{0.0};
+    double packet_loss_percent{0.0};
 };
 
 inline std::string escape_status_value(const std::string& value) {
@@ -65,9 +71,15 @@ inline bool write_runtime_status(const std::filesystem::path& path,
     output << "servo=" << (status.servo ? 1 : 0) << '\n';
     output << "sequence=" << status.sequence << '\n';
     output << "watchdog_ticks=" << status.watchdog_ticks << '\n';
+    output << "dropped_packets=" << status.dropped_packets << '\n';
+    output << "read_errors=" << status.read_errors << '\n';
+    output << "send_errors=" << status.send_errors << '\n';
+    output << "login_code=" << status.login_code << '\n';
+    output << "servo_error=" << status.servo_error << '\n';
     output << std::fixed << std::setprecision(3);
     output << "rate_hz=" << status.rate_hz << '\n';
     output << "packet_age_ms=" << status.packet_age_ms << '\n';
+    output << "packet_loss_percent=" << status.packet_loss_percent << '\n';
     output << "alarm=" << escape_status_value(status.alarm) << '\n';
     output.flush();
     output.close();

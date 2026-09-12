@@ -348,6 +348,7 @@ int main(int argc, char** argv) {
         std::uint64_t read_errors = 0;
         std::uint64_t send_errors = 0;
         std::string status_write_error_reported;
+        int last_servo_error = 0;
         std::ofstream record;
         if (record_enabled) {
             record.open(options.record_file, std::ios::out | std::ios::trunc);
@@ -575,6 +576,7 @@ int main(int argc, char** argv) {
                 {
                     std::lock_guard<std::mutex> lock(sdk_mutex);
                     servo_ret = robot.servo_j(&command, ABS, 1);
+                    last_servo_error = servo_ret;
                 }
                 if (servo_ret != 0) {
                     stop_reason = "SERVO_J_FAILED";
@@ -630,6 +632,11 @@ int main(int argc, char** argv) {
                 runtime_status.valid = packet.operator_valid != 0;
                 runtime_status.servo = servo_enabled;
                 runtime_status.sequence = packet.sequence;
+                runtime_status.watchdog_ticks = 0;
+                runtime_status.read_errors = read_errors;
+                runtime_status.send_errors = send_errors;
+                runtime_status.login_code = login_ret;
+                runtime_status.servo_error = last_servo_error;
                 runtime_status.rate_hz = elapsed_s > 0.0 ? packet.sequence / elapsed_s : 0.0;
                 std::string status_error;
                 if (!windows_jaka::write_runtime_status(options.status_file, runtime_status, status_error)) {

@@ -374,6 +374,12 @@ void build_ui(HWND window) {
     add_column(g_status_list, 7, 170, L"故障");
     add_column(g_status_list, 8, 90, L"数据年龄ms");
     add_column(g_status_list, 9, 90, L"序列");
+    add_column(g_status_list, 10, 70, L"登录码");
+    add_column(g_status_list, 11, 80, L"Servo错误");
+    add_column(g_status_list, 12, 80, L"速率Hz");
+    add_column(g_status_list, 13, 80, L"丢包");
+    add_column(g_status_list, 14, 90, L"Watchdog");
+    add_column(g_status_list, 15, 100, L"读写错误");
 
     fill_robot_list();
     fill_group_list();
@@ -548,6 +554,20 @@ void refresh_status_list() {
         ListView_SetItemText(g_status_list, row, 7, alarm.data());
         ListView_SetItemText(g_status_list, row, 8, age.data());
         ListView_SetItemText(g_status_list, row, 9, sequence.data());
+        std::wstring login_code = value("login_code", L"");
+        std::wstring servo_error = value("servo_error", L"");
+        std::wstring rate = value("rate_hz", L"");
+        std::wstring dropped = value("dropped_packets", L"");
+        std::wstring watchdog = value("watchdog_ticks", L"");
+        const std::wstring read_errors = values.empty() ? L"-" : value("read_errors", L"0");
+        const std::wstring send_errors = values.empty() ? L"-" : value("send_errors", L"0");
+        std::wstring errors = values.empty() ? L"-" : read_errors + L"/" + send_errors;
+        ListView_SetItemText(g_status_list, row, 10, login_code.data());
+        ListView_SetItemText(g_status_list, row, 11, servo_error.data());
+        ListView_SetItemText(g_status_list, row, 12, rate.data());
+        ListView_SetItemText(g_status_list, row, 13, dropped.data());
+        ListView_SetItemText(g_status_list, row, 14, watchdog.data());
+        ListView_SetItemText(g_status_list, row, 15, errors.data());
     }
     g_suppress_selection = false;
 }

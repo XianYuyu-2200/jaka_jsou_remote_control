@@ -312,6 +312,9 @@ int main(int argc, char** argv) {
             std::uint64_t last_processed_received_ns = 0;
             std::uint64_t last_manual_jog_ns = 0;
             std::uint64_t status_tick = 0;
+            int status_login_ret = -1;
+            int status_servo_error = 0;
+            std::uint64_t latest_dropped_packets = 0;
             bool status_robot_powered = false;
             bool status_robot_enabled = false;
             bool status_robot_dragging = false;
@@ -327,6 +330,7 @@ int main(int argc, char** argv) {
                 if (!options.offline) {
                     const int login_ret = robot.login_in(options.follower_ip.c_str(), false);
                     logged_in = login_ret == 0;
+                    status_login_ret = login_ret;
                     if (GetModuleHandleA("jakaAPI.dll") == nullptr) throw std::runtime_error("jakaAPI.dll is not loaded");
                     std::cout << "jakaAPI.dll load=ok\n";
                     std::cout << "follower login_ret=" << login_ret << " ip=" << options.follower_ip << "\n";
@@ -573,6 +577,7 @@ int main(int argc, char** argv) {
                         for (int i = 0; i < 6; ++i) command.jVal[i] = last_target[i];
                         const auto call_start_ns = windows_jaka::monotonic_ns();
                         const int servo_ret = robot.servo_j(&command, ABS, 1);
+                        status_servo_error = servo_ret;
                         const auto call_end_ns = windows_jaka::monotonic_ns();
                         const auto call_duration_ns = call_end_ns - call_start_ns;
                         if (call_duration_ns > max_servo_call_ns) max_servo_call_ns = call_duration_ns;
@@ -653,6 +658,7 @@ int main(int argc, char** argv) {
                             }
                             previous_servo_ns = call_start_ns;
                             ++servo_calls;
+                            status_servo_error = servo_ret;
                             if (servo_ret != 0) { fault.set("SERVO_J_FAILED"); break; }
                         }
                     }
@@ -688,11 +694,19 @@ int main(int argc, char** argv) {
                         runtime_status.servo = servo_enabled;
                         runtime_status.sequence = last_sequence;
                         runtime_status.watchdog_ticks = watchdog_ticks;
+                        runtime_status.dropped_packets = latest_dropped_packets;
+                        runtime_status.login_code = status_login_ret;
+                        runtime_status.servo_error = status_servo_error;
                         runtime_status.rate_hz = elapsed_s > 0.0 ? last_sequence / elapsed_s : 0.0;
                         if (last_processed_received_ns != 0 && tick_ns >= last_processed_received_ns) {
                             runtime_status.packet_age_ms =
                                 static_cast<double>(tick_ns - last_processed_received_ns) / 1e6;
                         }
+                        const std::uint64_t expected = last_sequence + latest_dropped_packets;
+                        runtime_status.packet_loss_percent = expected > 0
+                            ? 100.0 * static_cast<double>(latest_dropped_packets) /
+                                  static_cast<double>(expected)
+                            : 0.0;
                         std::string status_error;
                         if (!windows_jaka::write_runtime_status(options.status_file, runtime_status, status_error)) {
                             if (status_write_error_reported.empty()) {
