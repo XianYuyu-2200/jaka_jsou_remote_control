@@ -135,6 +135,20 @@ struct ActiveSession {
     }
 };
 std::vector<std::unique_ptr<ActiveSession>> g_sessions;
+
+struct StatusMonitorProcess {
+    std::string robot_id;
+    std::string ip;
+    HANDLE process{};
+    HANDLE job{};
+    ~StatusMonitorProcess() {
+        if (job) CloseHandle(job);
+        if (process) CloseHandle(process);
+    }
+};
+std::vector<std::unique_ptr<StatusMonitorProcess>> g_status_monitors;
+bool g_status_monitor_launch_error_reported{false};
+
 int g_jog_axis{-1};
 double g_jog_delta{0.0};
 windows_jaka::RobotRegistry g_registry;
@@ -268,6 +282,10 @@ LRESULT CALLBACK jog_button_subclass(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam, UINT_PTR, DWORD_PTR data);
 void stop_selected_group();
 std::filesystem::path workdir_root();
+bool robot_has_active_session(const std::string& robot_id);
+bool status_monitor_running(const std::string& robot_id);
+void stop_status_monitor(const std::string& robot_id);
+void sync_status_monitors();
 
 std::filesystem::path find_logo_path() {
     wchar_t module_path[MAX_PATH]{};
@@ -716,20 +734,48 @@ void refresh_status_page() {
     clear_list(g_status_page_primary);
     clear_list(g_status_page_diag);
     int fault_count = 0;
+    std::size_t monitor_count = 0;
     for (std::size_t i = 0; i < g_registry.robots.size(); ++i) {
         const auto& robot = g_registry.robots[i];
-        const auto path = g_status_directory / (widen(robot.id) + L".status");
-        const auto values = read_status_file(path);
-        const bool active = robot_has_active_session(robot.id);
-        const bool fresh = status_file_is_fresh(path);
-        const bool live = active && fresh && !values.empty();
+        const auto session_path = g_status_directory / (widen(robot.id) + L".status");
+        const auto monitor_path = g_status_directory / (widen(robot.id) + L".monitor.status");
+        const auto session_values = read_status_file(session_path);
+        const auto monitor_values = read_status_file(monitor_path);
+        const bool session_active = robot_has_active_session(robot.id);
+        const bool session_live = session_active && status_file_is_fresh(session_path) &&
+            !session_values.empty();
+        const bool monitor_active = status_monitor_running(robot.id);
+        const bool monitor_live = !session_live && monitor_active &&
+            status_file_is_fresh(monitor_path) && !monitor_values.empty();
+        if (monitor_active) ++monitor_count;
+
+        const auto& values = session_live ? session_values : monitor_values;
+        const bool live = session_live || monitor_live;
         auto value = [&](const std::string& key, const std::wstring& fallback = L"-") -> std::wstring {
             const auto found = values.find(key);
             return found == values.end() || found->second.empty() ? fallback : widen(found->second);
         };
-        std::wstring mode = live ? value("mode", L"-") : (active ? L"启动中/状态等待中" : L"未运行");
-        std::wstring alarm = live ? value("alarm", L"") : (active ? L"等待状态文件" : L"未运行");
-        if (alarm.empty()) alarm = live ? L"无" : alarm;
+
+        std::wstring mode;
+        if (!robot.enabled) mode = L"已禁用";
+        else if (live) mode = value("mode", L"-");
+        else if (session_active) mode = L"启动中/状态等待中";
+        else if (monitor_active) mode = L"监测启动中/状态等待中";
+        else mode = L"未监测";
+
+        std::wstring alarm;
+        if (live) {
+            alarm = value("alarm", L"");
+            if (alarm.empty()) alarm = L"无";
+        } else if (!robot.enabled) {
+            alarm = L"未监测";
+        } else if (session_active) {
+            alarm = L"等待会话状态文件";
+        } else if (monitor_active) {
+            alarm = L"等待监测状态文件";
+        } else {
+            alarm = L"未监测";
+        }
         if (live && alarm != L"无") ++fault_count;
 
         std::wstring id = widen(robot.id);
@@ -738,7 +784,8 @@ void refresh_status_page() {
         item.iItem = static_cast<int>(i);
         item.pszText = id.data();
         const int row = ListView_InsertItem(g_status_page_primary, &item);
-        const std::wstring unavailable = active ? L"等待" : L"未检测";
+        const std::wstring unavailable = live ? L"" :
+            ((session_active || monitor_active) ? L"等待" : L"未监测");
         std::wstring connected = live ? status_yes_no(values, "connected") : unavailable;
         std::wstring powered = live ? status_yes_no(values, "powered") : unavailable;
         std::wstring enabled = live ? status_yes_no(values, "enabled") : unavailable;
@@ -777,12 +824,11 @@ void refresh_status_page() {
     SYSTEMTIME now{};
     GetLocalTime(&now);
     wchar_t summary[256]{};
-    swprintf_s(summary, L"机器人 %zu 台  |  运行会话 %zu  |  故障 %d  |  更新 %02d:%02d:%02d",
-               g_registry.robots.size(), g_sessions.size(), fault_count,
+    swprintf_s(summary, L"机器人 %zu | 实时监测 %zu | 会话 %zu | 故障 %d | %02d:%02d:%02d",
+               g_registry.robots.size(), monitor_count, g_sessions.size(), fault_count,
                now.wHour, now.wMinute, now.wSecond);
     SetWindowTextW(g_status_page_summary, summary);
 }
-
 std::unordered_map<std::string, std::string> read_status_file(const std::filesystem::path& path) {
     std::unordered_map<std::string, std::string> values;
     std::ifstream input(path);
@@ -1044,6 +1090,129 @@ bool launch_session_command(const std::wstring& command, bool real_motion,
     return true;
 }
 
+std::filesystem::path manager_executable_directory() {
+    wchar_t module_path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+    return std::filesystem::path(module_path).parent_path();
+}
+
+std::filesystem::path status_monitor_executable_path() {
+    return manager_executable_directory() / L"windows_robot_status.exe";
+}
+
+StatusMonitorProcess* find_status_monitor(const std::string& robot_id) {
+    for (auto& monitor : g_status_monitors) {
+        if (monitor->robot_id == robot_id) return monitor.get();
+    }
+    return nullptr;
+}
+
+bool status_monitor_running(const std::string& robot_id) {
+    const StatusMonitorProcess* monitor = find_status_monitor(robot_id);
+    return monitor && monitor->process &&
+           WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT;
+}
+
+void stop_status_monitor(const std::string& robot_id) {
+    const auto found = std::find_if(g_status_monitors.begin(), g_status_monitors.end(),
+        [&](const std::unique_ptr<StatusMonitorProcess>& monitor) {
+            return monitor->robot_id == robot_id;
+        });
+    if (found == g_status_monitors.end()) return;
+    StatusMonitorProcess* monitor = found->get();
+    if (monitor->process && WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT) {
+        if (monitor->job) TerminateJobObject(monitor->job, 1);
+        else TerminateProcess(monitor->process, 1);
+        WaitForSingleObject(monitor->process, 1000);
+    }
+    g_status_monitors.erase(found);
+}
+
+void stop_all_status_monitors() {
+    for (auto& monitor : g_status_monitors) {
+        if (monitor->process && WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT) {
+            if (monitor->job) TerminateJobObject(monitor->job, 1);
+            else TerminateProcess(monitor->process, 1);
+            WaitForSingleObject(monitor->process, 1000);
+        }
+    }
+    g_status_monitors.clear();
+}
+
+bool start_status_monitor(const windows_jaka::RobotProfile& robot) {
+    const std::filesystem::path executable = status_monitor_executable_path();
+    if (!std::filesystem::exists(executable)) {
+        if (!g_status_monitor_launch_error_reported) {
+            set_status(L"找不到实时状态程序：" + executable.wstring());
+            g_status_monitor_launch_error_reported = true;
+        }
+        return false;
+    }
+
+    const std::filesystem::path status_path =
+        g_status_directory / (widen(robot.id) + L".monitor.status");
+    std::wstring command = quote_w(executable.wstring()) +
+        L" --robot-id " + quote_w(widen(robot.id)) +
+        L" --ip " + quote_w(widen(robot.ip)) +
+        L" --status-file " + quote_w(status_path.wstring()) +
+        L" --interval-ms 500";
+    HANDLE process = nullptr;
+    HANDLE job = nullptr;
+    DWORD error_code = ERROR_SUCCESS;
+    if (!launch_session_command(command, false,
+                                g_status_directory / (widen(robot.id) + L".monitor.log"),
+                                process, job, error_code)) {
+        if (!g_status_monitor_launch_error_reported) {
+            set_status(L"启动实时状态程序失败，Windows 错误码=" + std::to_wstring(error_code));
+            g_status_monitor_launch_error_reported = true;
+        }
+        return false;
+    }
+
+    auto monitor = std::make_unique<StatusMonitorProcess>();
+    monitor->robot_id = robot.id;
+    monitor->ip = robot.ip;
+    monitor->process = process;
+    monitor->job = job;
+    g_status_monitors.push_back(std::move(monitor));
+    g_status_monitor_launch_error_reported = false;
+    return true;
+}
+
+void sync_status_monitors() {
+    std::set<std::string> desired;
+    for (const auto& robot : g_registry.robots) {
+        if (robot.enabled && !robot_has_active_session(robot.id)) desired.insert(robot.id);
+    }
+
+    for (auto monitor = g_status_monitors.begin(); monitor != g_status_monitors.end();) {
+        const std::string robot_id = (*monitor)->robot_id;
+        const std::string ip = (*monitor)->ip;
+        const auto* robot = g_registry.find_robot(robot_id);
+        const bool running = (*monitor)->process &&
+            WaitForSingleObject((*monitor)->process, 0) == WAIT_TIMEOUT;
+        const bool current = running && robot && robot->enabled && robot->ip == ip &&
+            !robot_has_active_session(robot_id);
+        if (current) {
+            ++monitor;
+            continue;
+        }
+        if (running) {
+            if ((*monitor)->job) TerminateJobObject((*monitor)->job, 1);
+            else TerminateProcess((*monitor)->process, 1);
+            WaitForSingleObject((*monitor)->process, 1000);
+        }
+        monitor = g_status_monitors.erase(monitor);
+    }
+
+    if (!std::filesystem::exists(status_monitor_executable_path())) return;
+    for (const auto& robot : g_registry.robots) {
+        if (desired.find(robot.id) != desired.end() && !find_status_monitor(robot.id)) {
+            start_status_monitor(robot);
+        }
+    }
+}
+
 void terminate_session(ActiveSession* session, bool graceful) {
     if (!session) return;
     if (graceful) {
@@ -1186,6 +1355,9 @@ void start_selected_group() {
         L" -BasePort " + std::to_wstring(base_port) +
         L" -StatusDirectory " + quote_w(g_status_directory.wstring());
     command += real_motion ? L" -ArmMotion" : L" -DryRun";
+
+    stop_status_monitor(plan.operator_robot.id);
+    for (const auto& follower : plan.follower_robots) stop_status_monitor(follower.id);
 
     std::error_code ignored;
     std::filesystem::remove(g_status_directory / (widen(plan.operator_robot.id) + L".status"), ignored);
@@ -1347,6 +1519,8 @@ void start_single_session(const std::string& control_mode) {
     if (!playback_file.empty()) command += L" -PlaybackFile " + quote_w(playback_file);
     command += real_motion ? L" -ArmMotion" : L" -DryRun";
 
+    stop_status_monitor(robot.id);
+
     std::error_code ignored;
     std::filesystem::remove(g_status_directory / (widen(robot.id) + L".status"), ignored);
     HANDLE process = nullptr;
@@ -1379,6 +1553,7 @@ void stop_session_by_key(const std::string& key) {
     terminate_session(session, true);
     const std::wstring label = widen(session->label);
     remove_session(key);
+    sync_status_monitors();
     set_status(L"会话已停止：" + label);
     update_session_ui();
 }
@@ -1554,6 +1729,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_CREATE:
         g_window = window;
         build_ui(window);
+        sync_status_monitors();
         update_session_ui();
         SetTimer(window, ID_SESSION_TIMER, 500, nullptr);
         return 0;
@@ -1609,6 +1785,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (wparam == ID_SESSION_TIMER) {
             const std::size_t before = g_sessions.size();
             prune_exited_sessions();
+            sync_status_monitors();
             if (g_status_page_open) refresh_status_page();
             update_session_ui();
             if (g_sessions.size() != before && g_sessions.empty() && g_session_status) {
@@ -1632,6 +1809,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         break;
     }
     case WM_DESTROY:
+        stop_all_status_monitors();
         stop_all_sessions();
         KillTimer(window, ID_SESSION_TIMER);
         DeleteObject(g_heading_font);

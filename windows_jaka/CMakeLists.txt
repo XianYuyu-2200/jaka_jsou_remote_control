@@ -70,6 +70,10 @@ if(NOT WINDOWS_JAKA_TEST_ONLY)
     target_include_directories(windows_follower PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     target_link_libraries(windows_follower PRIVATE jaka_sdk)
 
+    add_executable(windows_robot_status src/windows_robot_status.cpp)
+    target_include_directories(windows_robot_status PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
+    target_link_libraries(windows_robot_status PRIVATE jaka_sdk)
+
     add_executable(windows_teleop_gui WIN32 src/windows_teleop_gui.cpp)
     target_include_directories(windows_teleop_gui PRIVATE "${WINDOWS_JAKA_INCLUDE_DIR}")
     target_link_libraries(windows_teleop_gui PRIVATE comctl32 shell32 user32 gdi32 gdiplus)
@@ -85,7 +89,7 @@ if(NOT WINDOWS_JAKA_TEST_ONLY)
     # Only the SDK-linked binaries need the vendor DLL next to them. The GUI
     # links against comctl32/shell32/user32/gdi32 only, so copying the SDK DLL
     # there just makes GUI-only builds fail when the SDK path is unavailable.
-    foreach(target windows_operator windows_follower)
+    foreach(target windows_operator windows_follower windows_robot_status)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${JAKA_SDK_DLL}"
