@@ -79,6 +79,8 @@ foreach ($id in @($operatorId) + $followerIds) {
 
 $candidateDirs = @(
     (Join-Path $scriptRoot "..\build\windows_jaka\$Configuration"),
+    (Join-Path $scriptRoot "..\build\windows_jaka-manager-v8\Release"),
+    (Join-Path $scriptRoot "..\build\windows_jaka-manager-v7\Release"),
     (Join-Path $scriptRoot "..\build\windows_jaka-vs\Release"),
     (Join-Path $scriptRoot "..\build\windows_jaka-verify\Release"),
     (Join-Path $scriptRoot "..\build\windows_jaka-release")

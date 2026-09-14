@@ -1489,6 +1489,25 @@ void start_single_session(const std::string& control_mode) {
         return;
     }
 
+    std::filesystem::path record_file;
+    if (control_mode == "record") {
+        const auto log_dir = workdir_root() / L"logs";
+        std::error_code directory_error;
+        std::filesystem::create_directories(log_dir, directory_error);
+        if (directory_error) {
+            set_status(L"无法创建轨迹目录：" + widen(directory_error.message()));
+            return;
+        }
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+        const std::wstring safe_robot = widen(windows_jaka::safe_pipe_component(robot.id));
+        wchar_t file_name[160]{};
+        swprintf_s(file_name, L"trajectory_%s_%04d%02d%02d_%02d%02d%02d.csv",
+                   safe_robot.c_str(), now.wYear, now.wMonth, now.wDay,
+                   now.wHour, now.wMinute, now.wSecond);
+        record_file = log_dir / file_name;
+    }
+
     std::wstring playback_file;
     if (control_mode == "playback") {
         wchar_t file_name[MAX_PATH]{};
@@ -1516,6 +1535,7 @@ void start_single_session(const std::string& control_mode) {
         L" -RobotId " + quote_w(widen(robot.id)) +
         L" -ControlMode " + quote_w(widen(control_mode)) +
         L" -StatusDirectory " + quote_w(g_status_directory.wstring());
+    if (!record_file.empty()) command += L" -RecordFile " + quote_w(record_file.wstring());
     if (!playback_file.empty()) command += L" -PlaybackFile " + quote_w(playback_file);
     command += real_motion ? L" -ArmMotion" : L" -DryRun";
 
@@ -1542,8 +1562,13 @@ void start_single_session(const std::string& control_mode) {
     session->mode = control_mode;
     session->log_path = g_status_directory / (widen(robot.id) + L".log");
     g_sessions.push_back(std::move(session));
-    set_status((real_motion ? L"真实运动单台已启动：" : L"Dry-run 单台已启动：") +
-               widen(robot.id) + L"，模式=" + widen(control_mode));
+    if (control_mode == "record") {
+        set_status((real_motion ? L"真实轨迹录制已启动：" : L"Dry-run 轨迹录制已启动：") +
+                   widen(robot.id) + L"，文件=" + record_file.wstring());
+    } else {
+        set_status((real_motion ? L"真实运动单台已启动：" : L"Dry-run 单台已启动：") +
+                   widen(robot.id) + L"，模式=" + widen(control_mode));
+    }
     update_session_ui();
 }
 

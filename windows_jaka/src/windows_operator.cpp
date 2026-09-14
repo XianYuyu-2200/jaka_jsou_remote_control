@@ -221,11 +221,11 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
-        if (joint_enabled && initial_dragging) {
+        if (options.control_mode == "joint" && initial_dragging) {
             throw std::runtime_error("operator must exit drag mode before joint control");
         }
-        if ((joint_enabled || playback_enabled) && initial_dragging) {
-            throw std::runtime_error("operator must exit drag mode before joint or trajectory control");
+        if (playback_enabled && initial_dragging) {
+            throw std::runtime_error("operator must exit drag mode before trajectory playback");
         }
 
         std::cout << (real_motion ? "REAL ROBOT MOTION ENABLED\n"
