@@ -151,6 +151,7 @@ int main(int argc, char** argv) {
     JAKAZuRobot robot;
     bool logged_in = false;
     bool servo_enabled = false;
+    bool drag_mode_enabled = false;
     std::mutex sdk_mutex;
     std::thread state_thread;
     std::thread control_thread;
@@ -226,6 +227,9 @@ int main(int argc, char** argv) {
         }
         if (playback_enabled && initial_dragging) {
             throw std::runtime_error("operator must exit drag mode before trajectory playback");
+        }
+        if (options.control_mode == "record" && initial_dragging) {
+            drag_mode_enabled = true;
         }
 
         std::cout << (real_motion ? "REAL ROBOT MOTION ENABLED\n"
@@ -431,6 +435,25 @@ int main(int argc, char** argv) {
                     }
                     manual_jog_active = any_jog;
                     last_manual_jog_ns = tick_ns;
+                } else if (control_command.type == windows_jaka::ControlCommand::Type::DragMode) {
+                    if (!real_motion || options.control_mode != "record") {
+                        std::cout << "operator DRAG ignored: control_mode=" << options.control_mode << "\n";
+                        continue;
+                    }
+                    if (servo_enabled) {
+                        std::lock_guard<std::mutex> lock(sdk_mutex);
+                        robot.motion_abort();
+                        robot.servo_move_enable(FALSE, false);
+                        servo_enabled = false;
+                    }
+                    int drag_ret = -1;
+                    {
+                        std::lock_guard<std::mutex> lock(sdk_mutex);
+                        drag_ret = robot.drag_mode_enable(control_command.enabled ? TRUE : FALSE);
+                    }
+                    std::cout << "operator drag_mode_ret=" << drag_ret
+                              << " enabled=" << (control_command.enabled ? 1 : 0) << "\n";
+                    if (drag_ret == 0) drag_mode_enabled = control_command.enabled;
                 } else if (control_command.type == windows_jaka::ControlCommand::Type::Stop) {
                     stop.request_stop();
                     break;
@@ -678,6 +701,11 @@ int main(int argc, char** argv) {
             robot.servo_move_enable(FALSE, false);
             servo_enabled = false;
         }
+        if (drag_mode_enabled) {
+            const int drag_exit_ret = robot.drag_mode_enable(FALSE);
+            std::cout << "operator drag_mode_exit_ret=" << drag_exit_ret << "\n";
+            drag_mode_enabled = false;
+        }
         control_stopping.store(true);
         windows_jaka::send_control_command(options.control_pipe, "STOP");
         if (control_thread.joinable()) control_thread.join();
@@ -704,6 +732,11 @@ int main(int argc, char** argv) {
             robot.motion_abort();
             robot.servo_move_enable(FALSE, false);
             servo_enabled = false;
+        }
+        if (drag_mode_enabled) {
+            const int drag_exit_ret = robot.drag_mode_enable(FALSE);
+            std::cout << "operator drag_mode_exit_ret=" << drag_exit_ret << "\n";
+            drag_mode_enabled = false;
         }
         control_stopping.store(true);
         windows_jaka::send_control_command(control_pipe_name, "STOP");

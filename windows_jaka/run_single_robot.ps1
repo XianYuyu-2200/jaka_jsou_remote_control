@@ -58,6 +58,7 @@ if ([string]$robot["enabled"] -in @("0", "false", "no", "off")) { throw "Robot i
 
 $candidateDirs = @(
     (Join-Path $scriptRoot "..\build\windows_jaka\$Configuration"),
+    (Join-Path $scriptRoot "..\build\windows_jaka-manager-v9\Release"),
     (Join-Path $scriptRoot "..\build\windows_jaka-manager-v8\Release"),
     (Join-Path $scriptRoot "..\build\windows_jaka-manager-v7\Release"),
     (Join-Path $scriptRoot "..\build\windows_jaka-vs\Release"),

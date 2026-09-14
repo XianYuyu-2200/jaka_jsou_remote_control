@@ -14,11 +14,12 @@
 namespace windows_jaka {
 
 struct ControlCommand {
-    enum class Type { None, Jog, JogStop, SafetyPose, Stop };
+    enum class Type { None, Jog, JogStop, SafetyPose, DragMode, Stop };
     Type type{Type::None};
     int axis{-1};
     double delta_rad{0.0};
     JointArray pose{};
+    bool enabled{false};
 };
 
 class ControlMailbox {
@@ -62,6 +63,13 @@ inline bool parse_control_line(const std::string& line, ControlCommand& command)
             if (!(input >> value)) return false;
         }
         return all_finite(command.pose);
+    }
+    if (kind == "DRAG") {
+        int enabled = 0;
+        if (!(input >> enabled) || (enabled != 0 && enabled != 1)) return false;
+        command.type = ControlCommand::Type::DragMode;
+        command.enabled = enabled != 0;
+        return true;
     }
     if (kind == "STOP") {
         command.type = ControlCommand::Type::Stop;

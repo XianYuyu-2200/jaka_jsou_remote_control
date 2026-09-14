@@ -91,6 +91,7 @@ constexpr int ID_SINGLE_PLAYBACK = 1402;
 constexpr int ID_SINGLE_STOP = 1403;
 constexpr int ID_SAFE_EXECUTE = 1404;
 constexpr int ID_STOP_ALL = 1405;
+constexpr int ID_SINGLE_DRAG = 1406;
 constexpr int ID_JOG_BASE = 1500;
 constexpr int ID_OPEN_STATUS_PAGE = 1600;
 constexpr int ID_STATUS_BACK = 1601;
@@ -479,13 +480,15 @@ void build_ui(HWND window) {
 
     add_label(window, L"单台机器人控制", 420, 726, 180, &g_robot_controls);
     add_control(window, L"BUTTON", L"关节控制", WS_TABSTOP | BS_PUSHBUTTON,
-                570, 718, 100, 36, ID_SINGLE_JOINT, &g_robot_controls);
+                540, 718, 90, 36, ID_SINGLE_JOINT, &g_robot_controls);
     add_control(window, L"BUTTON", L"轨迹录制", WS_TABSTOP | BS_PUSHBUTTON,
-                680, 718, 100, 36, ID_SINGLE_RECORD, &g_robot_controls);
+                636, 718, 90, 36, ID_SINGLE_RECORD, &g_robot_controls);
+    add_control(window, L"BUTTON", L"进入拖动", WS_TABSTOP | BS_PUSHBUTTON,
+                732, 718, 90, 36, ID_SINGLE_DRAG, &g_robot_controls);
     add_control(window, L"BUTTON", L"轨迹回放", WS_TABSTOP | BS_PUSHBUTTON,
-                790, 718, 100, 36, ID_SINGLE_PLAYBACK, &g_robot_controls);
+                828, 718, 90, 36, ID_SINGLE_PLAYBACK, &g_robot_controls);
     add_control(window, L"BUTTON", L"停止单台", WS_TABSTOP | BS_PUSHBUTTON,
-                900, 718, 100, 36, ID_SINGLE_STOP, &g_robot_controls);
+                924, 718, 80, 36, ID_SINGLE_STOP, &g_robot_controls);
     add_control(window, L"BUTTON", L"执行安全姿态", WS_TABSTOP | BS_PUSHBUTTON,
                 1010, 718, 130, 36, ID_SAFE_EXECUTE, &g_robot_controls);
 
@@ -512,7 +515,7 @@ void build_ui(HWND window) {
 
     add_group_box(window, L"使用顺序", 16, 834, 1228, 164);
     add_control(window, L"STATIC",
-                L"单台控制：选择机器人 -> 勾选真实运动授权 -> 关节控制 / 轨迹录制 / 轨迹回放；录制时必须实际移动机械臂。\r\n"
+                L"单台控制：选择机器人 -> 勾选真实运动授权 -> 轨迹录制 -> 进入拖动后拖动机器人，或用 +/- 点动；随后轨迹回放。\r\n"
                 L"组遥操作：选择遥操作组 -> 先 Dry-run -> 勾选真实运动授权 -> 启动选中组 -> 拖动操作臂。\r\n"
                 L"完整状态：点击右上角“实时状态”，分别查看运行状态和通信诊断。",
                 SS_LEFT, 34, 872, 1180, 106, 0, nullptr);
@@ -1283,6 +1286,8 @@ void update_session_ui() {
     ActiveSession* robot_session = robot_id.empty() ? nullptr : find_session(robot_session_key(robot_id));
     const bool single_joint = robot_session && robot_session->kind == SessionKind::Single &&
         (robot_session->mode == "joint" || robot_session->mode == "record");
+    const bool single_record = robot_session && robot_session->kind == SessionKind::Single &&
+        robot_session->mode == "record";
 
     EnableWindow(GetDlgItem(g_window, ID_GROUP_START), (!group_id.empty() && !group_session) ? TRUE : FALSE);
     EnableWindow(GetDlgItem(g_window, ID_GROUP_STOP), group_session ? TRUE : FALSE);
@@ -1292,6 +1297,7 @@ void update_session_ui() {
                  (!robot_id.empty() && !robot_session && !robot_in_use(robot_id)) ? TRUE : FALSE);
     EnableWindow(GetDlgItem(g_window, ID_SINGLE_PLAYBACK),
                  (!robot_id.empty() && !robot_session && !robot_in_use(robot_id)) ? TRUE : FALSE);
+    EnableWindow(GetDlgItem(g_window, ID_SINGLE_DRAG), single_record ? TRUE : FALSE);
     EnableWindow(GetDlgItem(g_window, ID_SINGLE_STOP), robot_session ? TRUE : FALSE);
     EnableWindow(GetDlgItem(g_window, ID_STOP_ALL), g_sessions.empty() ? FALSE : TRUE);
     for (int axis = 0; axis < 6; ++axis) {
@@ -1300,6 +1306,17 @@ void update_session_ui() {
     }
     EnableWindow(GetDlgItem(g_window, ID_SAFE_EXECUTE), single_joint ? TRUE : FALSE);
     EnableWindow(GetDlgItem(g_window, ID_GROUP_REAL_MOTION), TRUE);
+
+    HWND drag_button = GetDlgItem(g_window, ID_SINGLE_DRAG);
+    if (drag_button) {
+        bool dragging = false;
+        if (single_record) {
+            const auto status_path = g_status_directory / (widen(robot_id) + L".status");
+            dragging = status_file_is_fresh(status_path) &&
+                status_yes_no(read_status_file(status_path), "dragging") == L"是";
+        }
+        SetWindowTextW(drag_button, dragging ? L"退出拖动" : L"进入拖动");
+    }
 
     if (g_session_status) {
         if (g_sessions.empty()) SetWindowTextW(g_session_status, L"无运行会话");
@@ -1407,6 +1424,40 @@ bool send_single_pipe_line(const std::string& line) {
         return false;
     }
     return true;
+}
+
+void toggle_single_drag_mode() {
+    const int index = selected_index(g_robot_list);
+    if (index < 0 || index >= static_cast<int>(g_registry.robots.size())) {
+        set_status(L"请先选择机器人");
+        return;
+    }
+    const auto& robot = g_registry.robots[static_cast<std::size_t>(index)];
+    ActiveSession* session = find_session(robot_session_key(robot.id));
+    if (!session || session->kind != SessionKind::Single || session->mode != "record") {
+        set_status(L"请先启动“轨迹录制”，再进入拖动模式");
+        return;
+    }
+
+    const auto status_path = g_status_directory / (widen(robot.id) + L".status");
+    const auto values = read_status_file(status_path);
+    const bool dragging = status_file_is_fresh(status_path) &&
+                          status_yes_no(values, "dragging") == L"是";
+    const bool enable = !dragging;
+    if (enable) {
+        const int answer = MessageBoxW(
+            g_window,
+            L"进入拖动模式后，机械臂将可被手动拖拽。\n\n"
+            L"请确认人员、工件和周围设备安全，并准备随时按“停止单台”或急停。\n\n"
+            L"是否进入拖动模式？",
+            L"确认进入拖动模式", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+        if (answer != IDYES) return;
+    }
+
+    if (send_single_pipe_line(std::string("DRAG ") + (enable ? "1" : "0"))) {
+        set_status(enable ? L"已请求进入拖动模式；确认状态栏“拖动=是”后再移动机械臂"
+                          : L"已请求退出拖动模式");
+    }
 }
 
 void execute_single_safe_pose() {
@@ -1747,6 +1798,9 @@ void handle_command(int id) {
         break;
     case ID_SINGLE_PLAYBACK:
         start_single_session("playback");
+        break;
+    case ID_SINGLE_DRAG:
+        toggle_single_drag_mode();
         break;
     case ID_SINGLE_STOP:
         stop_selected_single();
