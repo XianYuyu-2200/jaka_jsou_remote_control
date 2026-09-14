@@ -11,6 +11,7 @@
 #include "control_pipe.hpp"
 #include "robot_registry.hpp"
 #include "runtime_plan.hpp"
+#include "trajectory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -511,7 +512,7 @@ void build_ui(HWND window) {
 
     add_group_box(window, L"使用顺序", 16, 834, 1228, 164);
     add_control(window, L"STATIC",
-                L"单台控制：选择机器人 -> 勾选真实运动授权 -> 关节控制 / 轨迹录制 / 轨迹回放。\r\n"
+                L"单台控制：选择机器人 -> 勾选真实运动授权 -> 关节控制 / 轨迹录制 / 轨迹回放；录制时必须实际移动机械臂。\r\n"
                 L"组遥操作：选择遥操作组 -> 先 Dry-run -> 勾选真实运动授权 -> 启动选中组 -> 拖动操作臂。\r\n"
                 L"完整状态：点击右上角“实时状态”，分别查看运行状态和通信诊断。",
                 SS_LEFT, 34, 872, 1180, 106, 0, nullptr);
@@ -1509,6 +1510,7 @@ void start_single_session(const std::string& control_mode) {
     }
 
     std::wstring playback_file;
+    double playback_duration_sec = 0.0;
     if (control_mode == "playback") {
         wchar_t file_name[MAX_PATH]{};
         OPENFILENAMEW dialog{};
@@ -1523,6 +1525,35 @@ void start_single_session(const std::string& control_mode) {
         dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
         if (!GetOpenFileNameW(&dialog)) return;
         playback_file = file_name;
+
+        std::vector<windows_jaka::TrajectoryPoint> trajectory_points;
+        std::string trajectory_error;
+        if (!windows_jaka::load_trajectory_file(narrow(playback_file), trajectory_points, trajectory_error)) {
+            const std::wstring message = L"无法读取轨迹文件：\n\n" + widen(trajectory_error);
+            MessageBoxW(g_window, message.c_str(), L"轨迹文件无效", MB_ICONWARNING | MB_OK);
+            return;
+        }
+
+        double maximum_motion_rad = 0.0;
+        for (std::size_t joint = 0; joint < 6; ++joint) {
+            double minimum = trajectory_points.front().joints[joint];
+            double maximum = minimum;
+            for (const auto& point : trajectory_points) {
+                minimum = std::min(minimum, point.joints[joint]);
+                maximum = std::max(maximum, point.joints[joint]);
+            }
+            maximum_motion_rad = std::max(maximum_motion_rad, maximum - minimum);
+        }
+        if (maximum_motion_rad < 0.0001) {
+            wchar_t detail[256]{};
+            swprintf_s(detail, L"该轨迹没有明显关节运动。\n\n最大关节变化：%.4f°\n\n"
+                                L"录制时必须让机械臂实际移动，或按住 +/- 关节按钮点动。"
+                                L"当前轨迹回放不会产生动作。",
+                       maximum_motion_rad * windows_jaka::kRadiansToDegrees);
+            MessageBoxW(g_window, detail, L"轨迹为静止轨迹", MB_ICONWARNING | MB_OK);
+            return;
+        }
+        playback_duration_sec = windows_jaka::trajectory_duration_seconds(trajectory_points);
     }
 
     const bool real_motion =
@@ -1565,6 +1596,11 @@ void start_single_session(const std::string& control_mode) {
     if (control_mode == "record") {
         set_status((real_motion ? L"真实轨迹录制已启动：" : L"Dry-run 轨迹录制已启动：") +
                    widen(robot.id) + L"，文件=" + record_file.wstring());
+    } else if (control_mode == "playback") {
+        wchar_t duration[128]{};
+        swprintf_s(duration, L"，时长=%.3f s", playback_duration_sec);
+        set_status((real_motion ? L"真实轨迹回放已启动：" : L"Dry-run 轨迹回放已启动：") +
+                   widen(robot.id) + duration);
     } else {
         set_status((real_motion ? L"真实运动单台已启动：" : L"Dry-run 单台已启动：") +
                    widen(robot.id) + L"，模式=" + widen(control_mode));
