@@ -84,6 +84,14 @@ std::wstring monitor_mutex_name(const std::string& robot_id) {
     return name;
 }
 
+std::wstring monitor_stop_event_name(const std::string& robot_id) {
+    std::wstring name = L"Local\\JakaRobotStatusStop_";
+    for (unsigned char ch : robot_id) {
+        name.push_back(std::isalnum(ch) ? static_cast<wchar_t>(ch) : L'_');
+    }
+    return name;
+}
+
 bool finite_joints(const JointValue& joints) {
     for (double value : joints.jVal) {
         if (!std::isfinite(value)) return false;
@@ -91,9 +99,13 @@ bool finite_joints(const JointValue& joints) {
     return true;
 }
 
-bool wait_for_stop_or_timeout(std::chrono::milliseconds duration) {
+bool wait_for_stop_or_timeout(std::chrono::milliseconds duration, HANDLE stop_event) {
     const auto deadline = std::chrono::steady_clock::now() + duration;
     while (!g_stop.load() && std::chrono::steady_clock::now() < deadline) {
+        if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+            g_stop.store(true);
+            return false;
+        }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         std::this_thread::sleep_for(std::min(remaining, std::chrono::milliseconds(50)));
@@ -107,6 +119,13 @@ int run_monitor(const Options& options) {
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(mutex);
         return 0;
+    }
+
+    HANDLE stop_event = CreateEventW(nullptr, TRUE, FALSE,
+                                     monitor_stop_event_name(options.robot_id).c_str());
+    if (!stop_event) {
+        CloseHandle(mutex);
+        return 5;
     }
 
     JAKAZuRobot robot;
@@ -156,7 +175,7 @@ int run_monitor(const Options& options) {
             login_ret = robot.login_in(options.ip.c_str(), false);
             if (login_ret != 0) {
                 publish("login failed", false, false, false, false, false, 0.0);
-                if (!wait_for_stop_or_timeout(interval)) break;
+                if (!wait_for_stop_or_timeout(interval, stop_event)) break;
                 continue;
             }
             logged_in = true;
@@ -174,7 +193,7 @@ int run_monitor(const Options& options) {
             publish("status read failed", false, false, false, false, false, 0.0);
             if (logged_in) robot.login_out();
             logged_in = false;
-            if (!wait_for_stop_or_timeout(interval)) break;
+            if (!wait_for_stop_or_timeout(interval, stop_event)) break;
             continue;
         }
 
@@ -183,11 +202,12 @@ int run_monitor(const Options& options) {
         publish(joint_ret == 0 ? "" : "joint read failed", true,
                 simple.powered_on != 0, simple.enabled != 0, dragging != FALSE, valid,
                 1000.0 / static_cast<double>(options.interval_ms));
-        if (!wait_for_stop_or_timeout(interval)) break;
+        if (!wait_for_stop_or_timeout(interval, stop_event)) break;
     }
 
     if (logged_in) robot.login_out();
     publish("monitor stopped", false, false, false, false, false, 0.0);
+    CloseHandle(stop_event);
     CloseHandle(mutex);
     return 0;
 }

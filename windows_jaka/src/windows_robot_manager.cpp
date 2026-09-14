@@ -1117,6 +1117,22 @@ bool status_monitor_running(const std::string& robot_id) {
            WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT;
 }
 
+std::wstring status_monitor_stop_event_name(const std::string& robot_id) {
+    std::wstring name = L"Local\\JakaRobotStatusStop_";
+    for (unsigned char ch : robot_id) {
+        name.push_back(std::isalnum(ch) ? static_cast<wchar_t>(ch) : L'_');
+    }
+    return name;
+}
+
+void signal_status_monitor_stop(const std::string& robot_id) {
+    HANDLE event = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE,
+                              status_monitor_stop_event_name(robot_id).c_str());
+    if (!event) return;
+    SetEvent(event);
+    CloseHandle(event);
+}
+
 void stop_status_monitor(const std::string& robot_id) {
     const auto found = std::find_if(g_status_monitors.begin(), g_status_monitors.end(),
         [&](const std::unique_ptr<StatusMonitorProcess>& monitor) {
@@ -1124,7 +1140,8 @@ void stop_status_monitor(const std::string& robot_id) {
         });
     if (found == g_status_monitors.end()) return;
     StatusMonitorProcess* monitor = found->get();
-    if (monitor->process && WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT) {
+    signal_status_monitor_stop(robot_id);
+    if (monitor->process && WaitForSingleObject(monitor->process, 2000) == WAIT_TIMEOUT) {
         if (monitor->job) TerminateJobObject(monitor->job, 1);
         else TerminateProcess(monitor->process, 1);
         WaitForSingleObject(monitor->process, 1000);
@@ -1134,7 +1151,8 @@ void stop_status_monitor(const std::string& robot_id) {
 
 void stop_all_status_monitors() {
     for (auto& monitor : g_status_monitors) {
-        if (monitor->process && WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT) {
+        signal_status_monitor_stop(monitor->robot_id);
+        if (monitor->process && WaitForSingleObject(monitor->process, 2000) == WAIT_TIMEOUT) {
             if (monitor->job) TerminateJobObject(monitor->job, 1);
             else TerminateProcess(monitor->process, 1);
             WaitForSingleObject(monitor->process, 1000);

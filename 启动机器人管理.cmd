@@ -1,6 +1,7 @@
 @echo off
 setlocal
-set "MANAGER=%~dp0build\windows_jaka-manager-v9\Release\windows_robot_manager.exe"
+set "MANAGER=%~dp0build\windows_jaka-manager-v10\Release\windows_robot_manager.exe"
+if not exist "%MANAGER%" set "MANAGER=%~dp0build\windows_jaka-manager-v9\Release\windows_robot_manager.exe"
 if not exist "%MANAGER%" set "MANAGER=%~dp0build\windows_jaka-manager-v8\Release\windows_robot_manager.exe"
 if not exist "%MANAGER%" set "MANAGER=%~dp0build\windows_jaka-manager-v7\Release\windows_robot_manager.exe"
 if not exist "%MANAGER%" set "MANAGER=%~dp0build\windows_jaka-manager-v6\Release\windows_robot_manager.exe"

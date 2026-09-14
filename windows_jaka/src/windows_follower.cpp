@@ -26,6 +26,18 @@ namespace {
 
 windows_jaka::StopController* g_stop = nullptr;
 
+int login_with_retry(JAKAZuRobot& robot, const char* ip, int attempts = 5, int delay_ms = 400) {
+    int result = -1;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (g_stop && g_stop->stopping()) return -1;
+        result = robot.login_in(ip, false);
+        if (result == 0) return 0;
+        if (attempt + 1 < attempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
+    }
+    return result;
+}
 BOOL WINAPI console_handler(DWORD type) {
     if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT ||
         type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
@@ -328,7 +340,7 @@ int main(int argc, char** argv) {
             std::ofstream record;
             try {
                 if (!options.offline) {
-                    const int login_ret = robot.login_in(options.follower_ip.c_str(), false);
+                    const int login_ret = login_with_retry(robot, options.follower_ip.c_str());
                     logged_in = login_ret == 0;
                     status_login_ret = login_ret;
                     if (GetModuleHandleA("jakaAPI.dll") == nullptr) throw std::runtime_error("jakaAPI.dll is not loaded");
