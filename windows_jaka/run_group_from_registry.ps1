@@ -55,7 +55,8 @@ function Read-IniFile([string]$Path) {
 }
 
 function Split-Csv([string]$Value) {
-    return @($Value -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $items = @($Value -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    return ,$items
 }
 
 $sections = Read-IniFile $RegistryPath
